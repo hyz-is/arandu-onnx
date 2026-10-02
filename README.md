@@ -4,8 +4,47 @@
 
 # Arandu ONNX
 
-An Arandu package. It registers its own routes, owns its own table, and decides
-for itself who may reach either.
+An Arandu package that runs ONNX models through ONNX Runtime and answers with
+tensors. It is the shared runtime of KUAA's vision engines — OCR, face,
+liveness — and it decides nothing: an engine hands it tensors, gets tensors
+back, and what those numbers mean is the engine's business.
+
+What it holds:
+
+- **Runtime** — loads the ONNX Runtime shared library, probes the preferred
+  execution providers (`cpu`, `coreml`, `cuda`) and falls back to the CPU when
+  one is missing.
+- **Model manifests** — every model carries its provenance (source, licences,
+  commercial use, status) and its contract (inputs, outputs, precision).
+  `Open` verifies the file's SHA-256 before ONNX Runtime reads it, refuses a
+  `blocked` model, and checks the graph against the declared tensors.
+- **Sessions** — `Run` takes and returns plain `float32`, `int64` and `uint8`
+  tensors, honours the context, is safe for concurrent use, and attaches a
+  `ModelInfo` (model id, version, digest, runtime version, precision, provider)
+  to every result, for the caller to record as evidence.
+- **Image helpers** — decode JPEG/PNG upright by EXIF orientation, bilinear
+  resize, letterbox, crop, and NCHW normalisation. Pure Go.
+
+## Build requirement
+
+This package links ONNX Runtime through cgo
+([`github.com/yalue/onnxruntime_go`](https://github.com/yalue/onnxruntime_go)
+v1.31.0, which loads the library with `dlopen` and requests C API version 26).
+An application that registers it:
+
+- builds with `CGO_ENABLED=1` and a C compiler;
+- needs the ONNX Runtime shared library, version 1.26 or later, on the machine
+  it runs on. Development and the tests use 1.27.1.
+
+The library is not loaded until the module boots, so building, vetting and
+testing code that only constructs the module needs neither.
+
+| OS | default `SharedLibraryPath` |
+| --- | --- |
+| macOS, Apple Silicon | `/opt/homebrew/lib/libonnxruntime.dylib` |
+| macOS, Intel | `/usr/local/lib/libonnxruntime.dylib` |
+| Linux | `libonnxruntime.so`, resolved by the dynamic loader |
+| Windows | `onnxruntime.dll`, resolved by the loader |
 
 ## Install
 
@@ -27,13 +66,16 @@ import (
 )
 ```
 
-The construction, in `Build`, after the session store exists and before
-`k.Register`:
+The construction, in `Build`, before `k.Register`. Every value comes from the
+application's own typed configuration; this package reads no environment
+variable:
 
 ```go
 	onnxModule, err := onnx.New(onnx.Config{
-		Tenant: cfg.Auth.Tenant,
-	}, db, sessions)
+		SharedLibraryPath: cfg.ONNX.Library,      // empty: the default above
+		IntraOpThreads:    cfg.ONNX.Threads,      // 0: ONNX Runtime chooses
+		Providers:         []string{"coreml", "cpu"},
+	})
 	if err != nil {
 		return App{}, err
 	}
@@ -45,159 +87,104 @@ And the registration, inside the `k.Register(...)` call already there:
 		onnxModule,
 ```
 
-Then, once, before the application serves:
+`Boot` loads the library and fails the boot, naming the path, when it cannot.
+`Close` closes every session and unloads it at shutdown. `Health` reports
+whether it is loaded. Registering it adds no route, no table and no background
+loop.
 
-```bash
-aru migrate
-```
-
-This package owns a table, which is why the migration step is not optional and
-why `arandu.mod.toml` says `migrations = true`.
-
-## Publish the views
-
-This package carries the markup of its own pages and hands it over instead of
-rendering it from the inside, because a page you cannot edit is a page that says
-the wrong thing in your product.
-
-Look at what would be written, then write it:
-
-```bash
-aru vendor:publish --tag=view
-aru vendor:publish --tag=view --apply
-```
-
-Nothing is written without `--apply`. The preview lists every file as `create`,
-`update`, `unchanged` or `conflict`, and running the command a second time
-writes nothing. A file changed outside its `arandu:begin custom` markers is
-reported as a conflict and left alone; `--force` publishes over one, and even
-then what is inside the markers is carried forward.
-
-The files land under `resources/views/modules/onnx/`, and from that point
-they are yours. Nothing of this package is compiled beside them, so no view name
-is registered twice and no rule has to decide which of two files won — the
-consequence being that a view of this package that changes later does not reach
-a project that already published it.
-
-Two steps are left to you, and they are left to you because a command that
-edited `bootstrap/app.go` behind your back is a command whose output nobody can
-explain. Compile what was written:
-
-```bash
-aru view:build
-```
-
-and import the directory it wrote into, with the other imports:
+The engines open their models on its runtime:
 
 ```go
-	_ "your/module/path/storage/framework/views/modules/onnx"
+	ocrModule, err := paddleocr.New(cfg.OCR, onnxModule.Runtime())
 ```
 
-Without that import the views are not in the binary, and the module refuses to
-boot rather than answering the first request that reaches one of them with a
-500. The refusal names the view, the command and the import.
+## Run a model
+
+```go
+runtime := onnxModule.Runtime()
+manifest, err := onnx.LoadManifest(manifestJSON) // the model's manifest.json
+session, err := runtime.Open(manifest, modelDir)  // verifies, then loads
+
+result, err := session.Run(ctx, map[string]onnx.Tensor{
+	"x": {Shape: []int64{1, 3, 640, 640}, Float32: pixels},
+})
+scores := result.Outputs["scores"].Float32
+evidence := result.Model // ID, Version, SHA256, Runtime, Precision, Provider, Status
+```
+
+A manifest:
+
+```json
+{
+  "id": "paddleocr.det",
+  "version": "5.0.0",
+  "file": "det/model.onnx",
+  "sha256": "…64 lowercase hex…",
+  "source_url": "https://…",
+  "license": "Apache-2.0",
+  "model_license": "Apache-2.0",
+  "commercial_use": "yes",
+  "redistribution": "allowed with notice",
+  "modification": "allowed",
+  "status": "approved",
+  "inputs":  [{"name": "x", "element_type": "float32", "shape": [1, 3, -1, -1]}],
+  "outputs": [{"name": "fetch_name_0", "element_type": "float32", "shape": [1, 1, -1, -1]}],
+  "precision": "fp32"
+}
+```
+
+`status` is `approved`, `dev-only` (loaded, and `ModelInfo.Status` says so) or
+`blocked` (refused before the file is read). `-1` is a dynamic dimension.
+Unknown keys are refused.
 
 ## Configuration
 
-| field | required | meaning |
+| Field | Default | What it does |
 | --- | --- | --- |
-| `Tenant` | yes | the customer a visitor with no session is read as. From the application's configuration, never from the request. |
-| `Prefix` | no | where the routes are mounted. Defaults to `/onnx`. |
-| `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200. |
+| `SharedLibraryPath` | per OS, above | The ONNX Runtime library to load. One per process |
+| `IntraOpThreads` | `0` | Threads inside one operator; 0 lets ONNX Runtime choose. Refused above 1024 |
+| `Providers` | `["cpu"]` | Preference order among `cpu`, `coreml`, `cuda`. A provider the library lacks is skipped and reported by `Runtime.Providers()`; the CPU is always the last resort |
 
-`New` returns an error rather than starting half-wired, so a setting that
-cannot work fails where it is written instead of on the first request that
-needed it.
+## Concurrency
 
-## Routes
+`Run` is safe for concurrent use. Concurrent calls share one ONNX Runtime
+session, whose `Run` is thread-safe, and each call allocates its own input and
+output values. A session's reader-writer lock lets runs proceed together and
+makes `Close` wait for them. `Runtime.Init` and `Runtime.Close` are idempotent;
+a closed runtime stays closed.
 
-| method | path | name |
-| --- | --- | --- |
-| `GET` | `/onnx` | `onnx.index` |
-| `GET` | `/onnx/{id}` | `onnx.show` |
-| `POST` | `/onnx` | `onnx.store` |
+## Why there is no table, policy or route
 
-Every one of them is refused until the policy is opened. That is the state the
-package ships in, and it is deliberate.
+This repository started from the Arandu package skeleton, whose demo entity —
+model, policy, service, views, migration and three routes — was removed. This
+module wraps a runtime and owns no record, so there is nothing for a policy to
+decide about; a route would run a model for anybody who sent a tensor.
+Inference is reached through the engine modules, behind the controllers and
+Grants of the application that installed them. `arandu.mod.toml` declares
+`filesystem = true` (it reads model files) and nothing else.
 
-## Open the policy
+## Limitations
 
-`policy.go` denies every action and has no branch that allows one. Open what
-this package needs, one action at a time, inside the custom block:
+- A model whose weights live in external data files cannot be opened: the
+  session is built from the verified bytes in memory.
+- Tensor element types are `float32`, `int64` and `uint8`.
+- `coreml` and `cuda` are attempted and reported, and only the CPU path is
+  exercised by the tests.
 
-```go
-	// arandu:begin custom
-	if a == OnnxView && (s.ID == record.ID || s.HasRole("admin")) {
-		return nil
-	}
-	// arandu:end custom
-```
+## Gates
 
-What is not written there stays closed, including every action added later.
-
-## Model-first data path
-
-`Onnx` embeds `model.Model[Onnx]`, and `Onnxs(db)` is the one
-configured entry point for its table. `OnnxService` owns `*data.DB` and
-follows `validate -> security.Authorize -> Grant -> Model terminal`; handlers
-never hold the database or construct a Model.
-
-Create writes `TenantID` from `data.Tenant(g)`. Find authorizes before reading
-and again against the row it found. List authorizes before building its scoped,
-allowlisted query. The Model keeps its default `tenant_id` scope on every
-terminal.
-
-Terminals return `*Onnx` and `[]*Onnx`. Keep those pointers intact:
-copying an embedded Model leaves its `Entity` pointer aimed at the original
-allocation. `Resource` and `Collection` are explicit response snapshots and do
-not expose tenant or Model internals.
-
-There is no CRUD Repository. Add one only for a complex query, read model,
-report, export or raw SQL contract that the common Model path cannot express.
-
-## Layout
-
-```
-module.go      registration, routes, handlers and migrations
-config.go      what the application passes in
-model.go       the entity, and what it may answer with
-policy.go      who may do what
-service.go     the rules and authorized Model access
-views.go       the files the application takes ownership of
-```
-
-## What is already correct, and has to stay that way
-
-**The policy denies everything.** There is no permit-all branch to delete
-later. The Service calls `security.Authorize` before its first `Onnxs(db)`
-reach, and every Model terminal requires the Grant that call produced.
-
-**Authorization precedes the Model.** The package audit checks that order in
-every exported Service method. A Model terminal enforces tenant scope; the
-preceding Policy call decides whether the action itself is allowed.
-
-**The tenant comes from `data.Tenant(g)`.** Never from the path, the body, the
-query string or a header. The value on the Grant came from the session; a value
-that arrived with the request is a value the caller chose.
-
-**`arandu.mod.toml` declares what the package does** — network, filesystem,
-exec, migrations — and the suite compares the declaration against what the code
-*calls*, not against what it imports: `net/http` is imported by everything with
-a route and says nothing. A package that says it makes no outbound calls and
-then opens one fails its own tests, and that is the only place the comparison
-happens. `aru doctor` audits the application it is run inside and never loads a
-dependency, so nothing audits an installed package except the package itself.
-
-## Tests
-
-```bash
+```sh
+export GOWORK=off CGO_ENABLED=1
+gofmt -l $(find . -name '*.go' -not -path '*/testdata/*' -not -name '*.kyse.go')
+go build ./...
+go vet ./...
 go test -race ./...
 ```
 
-The denial suite constructs the Service with a nil database, so even building
-`Onnxs(nil)` would panic. The structural twin reads the allowed path and
-rejects any Service method that reaches the Model before `Authorize`.
+The tests that load models skip, saying why, when the library is not on the
+machine. Their models are hand-encoded ONNX protobuf written by the tests
+themselves.
 
 ## Licence
 
-MIT. See [LICENSE.md](LICENSE.md). Copyright Paulo R. Lima.
+MIT. See [LICENSE.md](LICENSE.md).

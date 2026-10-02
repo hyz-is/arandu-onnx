@@ -1,8 +1,10 @@
 # Working on Arandu ONNX
 
-This is an Arandu package: one entity with an embedded Hesape Model, one policy
-that decides about it, one service that owns the database handle, and the routes
-that reach them.
+This is an Arandu package that runs ONNX models through ONNX Runtime and
+answers with tensors. It is the shared runtime KUAA's engine modules
+(`arandu-paddleocr`, `arandu-face`, `arandu-liveness`) build on: a runtime, a
+model registry with provenance, sessions, and the image helpers vision engines
+need.
 It is a Go module somebody `go get`s and registers by hand in their own
 `bootstrap/app.go`, which is the whole difference from working in an
 application. There is no service provider, no container and no discovery — if a
@@ -11,160 +13,104 @@ line of wiring is not written in the installer's repository, it does not happen.
 Read `.agents/skills/` before writing code. Each skill is a procedure, and the
 one you need is named by the situation you are in.
 
+## The KUAA rules
+
+These come from the project, not from taste. A change that breaks one is not
+merged.
+
+1. **No decisions in an engine, and none here.** This package returns
+   technical tensors and the `ModelInfo` that produced them. It never returns a
+   verdict, a threshold applied, an "approved" or a "match". Thresholds and
+   decisions belong to the application's decision layer, which records the
+   evidence this package attaches.
+2. **No Python.** Not as a runtime, not in a gate, not in a test, not to
+   generate a fixture. Models arrive as already-exported ONNX files; the tests
+   write their models as hand-encoded protobuf in Go.
+3. **Model provenance is mandatory.** A model is opened only through a
+   `Manifest` that records its digest, source, licences, commercial use,
+   redistribution, modification, status and precision. `Open` verifies the
+   SHA-256 before ONNX Runtime sees the bytes and refuses `blocked`. There is no
+   path that loads a file without a manifest, and none may be added.
+4. **Configuration is typed.** `Config` comes from the application. This
+   package reads no environment variable.
+
 ## The gates
 
 Nothing is finished until all four exit zero.
 
 ```sh
-export GOWORK=off
+export GOWORK=off CGO_ENABLED=1
 gofmt -l $(find . -name '*.go' -not -path '*/testdata/*' -not -name '*.kyse.go')
 go build ./...
 go vet ./...
 go test -race ./...
 ```
 
-`GOWORK=off` is not borrowed from somewhere else, and here it is not a
-preference either. This checkout may sit beside a Go workspace that lists the
-framework repositories and does not list this one; when it does, every command
-above fails before it compiles anything:
+`CGO_ENABLED=1` is required: the binding is cgo. The tests that load models need
+the ONNX Runtime shared library at `DefaultSharedLibraryPath()`; where it is
+absent they skip with the loader's own message, and the skip is a reason to fix
+the machine, not a green result for the runtime.
 
-```
-pattern ./...: directory prefix . does not contain modules listed in go.work
-or their selected dependencies
-```
+`GOWORK=off` matters because this checkout may sit beside a Go workspace that
+does not list it; with the workspace on, every command above fails before it
+compiles anything.
 
-With the workspace off, the module resolves the framework version in `go.mod` —
-which is what CI compiles against, and what somebody's `go get` will get.
-
-Both filters on `gofmt` are load-bearing in the toolchain even where this
-repository has nothing for them to skip: `gofmt` is the only tool in the chain
-that ignores build tags, and `testdata/` is where a fixture is allowed to be
-invalid on purpose.
-
-`aru doctor` is not one of the gates, and running it here costs a minute and
-answers nothing:
-
-```
-this is not an Arandu project: no go.mod, main.go and arandu.toml together.
-Run it from inside a project, or create one with `aru new`
-```
-
-It exits 1. It reads applications, and this is a library.
-
-It does not read this one after it is installed either, and that is why
-`tests/Unit/audit_test.go` exists. The doctor walks the application's own tree,
-skips `vendor/`, and opens the one `arandu.mod.toml` at its root; it never loads
-a dependency. So `tenant-from-request`, `system-grant-without-tenant` and
-`permission-not-declared` never see a line of an installed package, and whatever
-this one must prove about itself it proves in its own suite or nowhere.
+`aru doctor` reads applications, not libraries. Run here it exits 1 with
+"this is not an Arandu project", and it does not read an installed package
+either. That is why `tests/Unit/audit_test.go` compares `arandu.mod.toml` with
+what the code calls.
 
 ## What this repository holds
 
-| | measured with |
-| --- | --- |
-| 6 Go files, one per role, all in one package at the root | `grep -l '^package onnx' *.go` |
-| 6 test files, 37 tests | `find tests -name '*_test.go'` · `go test -count=1 ./... -v \| grep -c '^--- PASS'` |
-| 3 routes | `grep -c 'r.Action' module.go` |
-| 5 actions the policy answers about | `grep -cE '^\t[A-Za-z]+ security.Action = ' policy.go` |
-| 2 direct dependencies, both under `arandu-io` | `go list -m -f '{{if and (not .Indirect) (not .Main)}}{{.Path}} {{.Version}}{{end}}' all` |
-
-The layout is by role rather than by layer, so the package reads top to bottom:
-
 ```
-module.go      registration, routes, handlers and migrations
-config.go      what the application passes in
-model.go       the entity, and what it may answer with
-policy.go      who may do what
-service.go     the rules and authorized Model access
-views.go       the files the application takes ownership of
+module.go    registration: Name, Routes (none), Boot, Health, Close, Runtime
+config.go    what the application passes in, and the default library path
+runtime.go   the library, the providers, Open and the contract check
+manifest.go  the provenance and contract of a model file
+session.go   Run, ModelInfo and Result
+tensor.go    the tensor exchanged with a model
+image.go     decode, resize, letterbox, crop, NCHW
+exif.go      the EXIF orientation of a JPEG
 ```
 
-`Onnxs(db)` configures the table, string primary key and default
-`tenant_id` scope. Its terminals return `*Onnx`/`[]*Onnx`; keep those
-pointers intact because copying an embedded Model leaves its `Entity` pointer
-aimed at the original allocation. `Resource` and `Collection` are the deliberate
-response snapshot boundary.
+Tests live under `tests/Unit` (manifests, tensors, images, the audit) and
+`tests/Feature` (the module, and every test that loads a model).
 
-## What does not exist here
-
-Reaching for one of these is the most common way to write a package that is
-rejected in review. None of them is missing by accident.
+## What does not exist here, on purpose
 
 | A model reaches for | What is here instead |
 | --- | --- |
-| a service provider, a container, a `Register()` that discovers things | `New(cfg, db, sessions)`, called by hand in the installer's `bootstrap/app.go`. Everything the package touches is a parameter |
-| a global `DB`, an `init()` that opens a connection | the `*data.DB` handed to `New`. A package that opened its own connection would be a package the application cannot point at a test database |
-| a CRUD Repository beside the Model | `Onnxs(db)`, reached only by `OnnxService` after `security.Authorize` |
-| a tenant read from the path, the body, the query or a header | `data.Tenant(g)`, from the Grant, which came from the session |
-| a permit-all branch in the policy "for now" | nothing. The policy denies, and an action is opened by writing the rule that opens it |
-| an `interface{}` config, a map of options, an env var read at call time | the typed `Config` struct, validated by `New` |
-| a `panic` on bad wiring | an `error` from `New`. A wiring mistake found at boot costs one restart |
-| a third dependency | an argument, first. This module is imported into other people's builds |
-| a command of its own that copies files into a project | `Publishes()`, which declares a tagged tree and nothing more. `aru vendor:publish` asks the application which modules it registered and writes what each one declares, so one command serves every installed package instead of one command per package |
+| a threshold, a score cut-off, a boolean "is live" | the raw output tensor. The decision layer applies thresholds |
+| a Python export or conversion script | an ONNX file and its manifest, obtained elsewhere |
+| loading a model by path alone | `Runtime.Open(manifest, dir)` |
+| an environment variable for the library path | `Config.SharedLibraryPath` |
+| a route that runs a model | nothing. Engines are reached through the application's controllers |
+| a table of models | the manifest beside the file. The registry is the files and their manifests |
+| a second ONNX binding or a hand-written cgo layer | `github.com/yalue/onnxruntime_go`, pinned to the release whose C API version the supported ONNX Runtime serves |
 
-## The four properties
+## The binding and the library
 
-These are the reason the package is shaped the way it is. A change that breaks
-one of them is not merged, whatever else it improves. `tests/Unit/policy_test.go`
-checks all four against the code.
+`onnxruntime_go` embeds the ONNX Runtime C header and asks the loaded library
+for `ORT_API_VERSION` from it. A library older than that version returns no
+API and `Init` fails with `ErrLibraryUnavailable`. v1.31.0 requests 26, which
+ONNX Runtime 1.26 and later serve; v1.32.0 and later request 28 or more. Moving
+the binding is moving the minimum library version: say so in `CHANGELOG.md`
+and `UPGRADE.md`.
 
-1. **The policy denies by default**, and has no branch that allows an action.
-   `TestThePolicyDeniesEveryActionByDefault` walks every action with an
-   administrator subject and requires
-   `security.ErrForbidden` from each.
-2. **Every Service method authorizes before it reaches the Model.**
-   `TestEveryServiceMethodAuthorizesBeforeTheModel` checks the source, and
-   `TestTheServiceRefusesBeforeReachingTheModel` gives the Service a nil handle
-   so even constructing `Onnxs` in the wrong order fails.
-3. **The tenant comes from `data.Tenant(g)`**, on every path, read and write.
-   `TestTheTenantComesFromTheGrant` and
-   `TestTheServiceWritesTenantOnlyFromTheGrant` hold both halves.
-4. **Nothing reaches the Model without passing the first two.** The denial
-   suite constructs the Service with a nil database, so a call to
-   `Onnxs(nil)` would panic. Every refusal it asserts is therefore proof
-   that authorization happened before Model construction.
-
-`policy_test.go` holds those four by calling the code. `tests/Unit/audit_test.go`
-holds the same shape by *reading* it: every exported Service method must call
-`Authorize` before its first `Onnxs`, every tenant write in the Service
-comes from `data.Tenant(g)`, and no tenant accessor reads request input.
-
-It also compares `arandu.mod.toml` against what the code *calls* —
-`os.WriteFile`, `exec.Command`, `http.Get`, a method named `Migrations` — rather
-than against what it imports, because `net/http` is imported by everything with
-a route and says nothing. Both directions fail: used and not declared, which is
-`permission-not-declared` where the doctor runs it, and declared and not used,
-which is a warning there and a failure here because `go test` has one outcome.
-Adding an outbound call, a file write or a process means declaring it in the
-same commit, and the suite is what says so.
-
-The fifth property is not syntax, so it is held where the routes exist.
-`TestNoRouteLandsInTheFrameworkNamespace`, in `tests/Feature/routes_test.go`,
-registers the module and reads the table back: a prefix arrives through
-configuration, and `/_arandu/` is refused when the application boots — in the
-installer's process, after publication.
-
-What the audit does not reach is written at the top of the file it lives in. It
-reads syntax, so dynamic dispatch, reflection, and wrappers around the named
-seams are invisible to it. A green run means no such thing was found written
-down, not that none exists.
+The binding keeps the environment in package globals, so one process has one
+library. `runtime.go` shares it between `Runtime` values by reference count and
+refuses a second path.
 
 ## Writing code
 
 Everything in the source is in English: identifiers, doc comments, internal
 comments, error messages, log messages, and the names and messages of tests.
-`pkg.go.dev` publishes the doc comments and its readers are users of this
-package.
 
 Every exported symbol carries a doc comment, and the comment documents the
-symbol and nothing else. Why a signature is what it is belongs there when it is
-a fact about the code — *"the value is held because Go does not build a type
-from a string"* stays. A date, an issue number, a version in progress or the
-name of another repository does not.
+symbol and nothing else. A date, an issue number, a version in progress or the
+name of another repository does not belong there.
 
 Tests go under `tests/`, in a capitalized category directory declaring a
 lowercase external package: `tests/Unit` holds `package unit_test`,
 `tests/Feature` holds `package feature_test`. Both import the package by its
-module path, which is what makes them see exactly what a caller sees. A test
-that genuinely needs something unexported goes beside the code as
-`*_internal_test.go`, and the suffix is how it says so.
+module path, which is what makes them see exactly what a caller sees.

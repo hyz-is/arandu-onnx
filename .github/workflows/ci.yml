@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+# The ONNX Runtime binding is cgo.
+env:
+  CGO_ENABLED: "1"
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -24,6 +28,18 @@ jobs:
           # standard library carries fixed vulnerabilities. "stable" is the
           # version people actually run, which is what CI should test against.
           go-version: stable
+
+      # The runtime tests load ONNX Runtime and skip without it, which would
+      # leave the runtime untested. The library goes where the Linux default,
+      # the loader's own search path, finds it.
+      - name: install ONNX Runtime
+        run: |
+          set -euo pipefail
+          version=1.27.1
+          curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${version}/onnxruntime-linux-x64-${version}.tgz" \
+            | tar -xz -C "$RUNNER_TEMP"
+          sudo cp -P "$RUNNER_TEMP/onnxruntime-linux-x64-${version}/lib/"libonnxruntime*.so* /usr/local/lib/
+          sudo ldconfig
 
       - name: gofmt
         # Two filters, and neither is preference. gofmt is the only tool in the

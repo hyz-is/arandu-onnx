@@ -8,6 +8,7 @@ Run the four gates. They are what CI runs, and a pull request that fails one of
 them fails for everybody who pulls after it.
 
 ```bash
+export GOWORK=off CGO_ENABLED=1
 gofmt -l $(find . -name '*.go' -not -path '*/testdata/*' -not -name '*.kyse.go')
 go build ./...
 go vet ./...
@@ -18,28 +19,23 @@ The two filters on `gofmt` are not preference. `gofmt` is the only tool in the
 chain that ignores build tags, so it reads files the compiler deliberately
 excludes; `testdata/` holds fixtures that are invalid on purpose.
 
+The tests that load a model need the ONNX Runtime shared library and skip,
+saying why, where it is absent. A pull request that touches the runtime is run
+with the library present.
+
 ## What a change has to keep true
 
 Four properties are the reason this package is what it is. A change that breaks
 one of them will not be merged, whatever else it improves.
 
-1. **The policy denies by default.** No branch allows every action, and none is
-   added. Opening an action means writing the rule that opens it.
-2. **Every Service method authorizes before reaching the Model.** The Grant is
-   then required by the Model terminal; constructing `Onnxs(db)` first is
-   already the wrong order and the structural audit rejects it.
-3. **The tenant comes from `data.Tenant(g)`.** Not from the path, the body, the
-   query string or a header, on any code path, including the read paths.
+1. **Tensors, never decisions.** No threshold, verdict or score cut-off. The
+   application's decision layer applies them and records `ModelInfo` beside.
+2. **No model without its manifest.** `Runtime.Open` refuses a blocked model
+   before reading it and checks the SHA-256 before ONNX Runtime sees the bytes.
+   No path around either is added.
+3. **No Python.** Not at runtime, not in a gate, not to generate a fixture.
 4. **`arandu.mod.toml` matches the code.** Adding an outbound call, a file
    write or a process means declaring it there in the same commit.
-
-CRUD stays on `Onnxs(db)` and its Builder. Add a Repository only for a
-specialized complex query, read model, report, export or raw SQL contract; a
-wrapper around `Find`, `Get`, `Save` or `Delete` is a second data path.
-
-Model-backed entities stay pointers. Copying `Onnx` also copies an embedded
-Model whose `Entity` still points to the original allocation. Response
-resources are the deliberate snapshot boundary; Service results are not.
 
 ## Style
 

@@ -1,15 +1,23 @@
 ---
 name: onnx-package
-description: Install, wire and use the Arandu ONNX package (Go, Arandu) in an application. Use when the request is to "install Arandu ONNX", "add onnx to the app", "go get github.com/kuaa-io/arandu-onnx", "wire it into bootstrap/app.go", "register the module", "use the onnx routes", "everything under /onnx returns 403", "403 forbidden from onnx", "the table does not exist", "no such table", "change where it is mounted", "let admins read it", or when a project's go.mod already requires github.com/kuaa-io/arandu-onnx. Covers the three lines of wiring and where each one goes, the Config fields and which one is required, the routes and their names, why the policy refuses everything until somebody opens it, and the migration step that is not optional.
+description: Install, wire and use the Arandu ONNX package (Go, Arandu) in an application. Use when the request is to "install arandu-onnx", "run an ONNX model", "add ONNX Runtime", "go get github.com/kuaa-io/arandu-onnx", "wire it into bootstrap/app.go", "the app fails to boot with ONNX Runtime library unavailable", "dlopen failed", "model digest mismatch", "model blocked", "model contract mismatch", "use CoreML", "use CUDA", "write a model manifest", or when a project's go.mod already requires github.com/kuaa-io/arandu-onnx. Covers the build requirement, the wiring and where it goes, the three Config fields, manifests, and what each error means.
 license: MIT
 ---
 
 # Using Arandu ONNX
 
-An Arandu package with one entity, its own table, its own routes and its own
-policy. It is registered by hand — there is no service provider, no container
-and no discovery, so if a line is not written in the application, it does not
-happen.
+A module that loads ONNX Runtime, opens verified models and runs them,
+returning tensors and the `ModelInfo` that produced them. It decides nothing.
+It is registered by hand — there is no service provider, no container and no
+discovery.
+
+## Build requirement
+
+`CGO_ENABLED=1`, a C compiler, and the ONNX Runtime shared library (1.26 or
+later) on the machine that runs the application. On macOS with Homebrew:
+`brew install onnxruntime`. On Linux: the release archive from the ONNX
+Runtime project, with `libonnxruntime.so` on the loader's path or named in
+`Config.SharedLibraryPath`.
 
 ## Install
 
@@ -17,12 +25,9 @@ happen.
 go get github.com/kuaa-io/arandu-onnx
 ```
 
-## The three lines of wiring, and where each one goes
+## The wiring, and where it goes
 
-All three are in `bootstrap/app.go`. Nothing else in the application changes,
-and `aru make:module` does not edit this file for you.
-
-The import, with the other module imports:
+All of it is in `bootstrap/app.go`.
 
 ```go
 import (
@@ -30,136 +35,58 @@ import (
 )
 ```
 
-The construction, in `Build`, after the session store exists and before
-`k.Register`:
+In `Build`, before `k.Register`, with every value from the application's typed
+configuration (the package reads no environment variable):
 
 ```go
 	onnxModule, err := onnx.New(onnx.Config{
-		Tenant: cfg.Auth.Tenant,
-	}, db, sessions)
+		SharedLibraryPath: cfg.ONNX.Library, // empty: DefaultSharedLibraryPath()
+		IntraOpThreads:    cfg.ONNX.Threads, // 0: ONNX Runtime chooses
+		Providers:         cfg.ONNX.Providers, // e.g. coreml, cpu
+	})
 	if err != nil {
 		return App{}, err
 	}
 ```
 
-And the registration, inside the `k.Register(...)` call already there:
+Inside the `k.Register(...)` call:
 
 ```go
 		onnxModule,
 ```
 
-`New` returns an error rather than starting half-wired. It refuses a
-configuration that cannot work, a nil database handle and a nil session store,
-so a wiring mistake costs one restart instead of arriving as a nil dereference
-on the first request that needed it.
+Then hand `onnxModule.Runtime()` to each engine module's constructor. Boot loads
+the library; shutdown closes every session and unloads it.
 
-## Then run the migrations
+## Models
 
-```bash
-aru migrate
-```
-
-Not optional, and not automatic. The package owns a table, which is why its
-`arandu.mod.toml` declares `migrations = true` — that declaration is how an
-installer finds out before deploying rather than from the first request.
-
-`aru migrate` is a step in the pipeline and never a call at the start of the
-process: with N replicas, N migrations race each other.
-
-**Symptom to recognise:** `no such table`, or `relation does not exist`, from a
-route that authorized correctly. The migration has not run.
-
-## Configuration
-
-| field | required | meaning |
-| --- | --- | --- |
-| `Tenant` | yes | the customer a visitor with no session is read as. From the application's configuration, never from the request |
-| `Prefix` | no | where the routes are mounted. Defaults to `/onnx` |
-| `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200 |
-
-`Tenant` is the one place a tenant does not come from a `Grant`, and it is
-because a visitor with no session has no `Grant` yet. Everywhere else the tenant
-comes from `data.Tenant(g)`. Passing a value the request named — a path segment,
-a header, a subdomain read off the URL — is what `TestNoTenantIsReadOutOfTheRequest`
-fails on. In an application the same mistake is `aru doctor`'s
-`tenant-from-request`; in a package nothing but the package's own suite looks.
-
-`PageSize` above 200 is an error from `New`, not a silent 200. A number somebody
-wrote and did not get is worse than a number somebody wrote and was told about.
-
-## Routes
-
-| method | path | name |
-| --- | --- | --- |
-| `GET` | `/onnx` | `onnx.index` |
-| `GET` | `/onnx/{id}` | `onnx.show` |
-| `POST` | `/onnx` | `onnx.store` |
-
-Build URLs from the names, never by writing the path a second time. `aru
-route:list` shows them grouped by module. Under a custom `Prefix` the paths move
-and the names do not.
-
-`GET /onnx` answers `{"data": {"items": [...]}}`, and adds
-`"next_cursor"` beside `data` when a further page exists. Pass it back as
-`?cursor=`. A page shorter than `PageSize` is the last one and carries no
-cursor.
-
-`TenantID` is not in any response. That is deliberate: it names a customer's
-identifier and the response is a declared list of fields rather than the entity.
-
-## Every route refuses everybody, until you open the policy
-
-This is the state the package ships in, and it is not a bug to work around.
-`OnnxPolicy` denies every action and has no branch that allows one:
-
-```
-403 forbidden
-```
-
-is what a correctly installed, correctly migrated, correctly wired package
-answers to an administrator on day one.
-
-Opening an action means writing the rule that opens it, in the package's
-`policy.go`, inside the block that says so:
+Every model is a file plus a manifest (JSON, unknown keys refused): `id`,
+`version`, `file` (relative to the model directory), `sha256`, `source_url`,
+`license`, `model_license`, `commercial_use` (`yes|no|unknown`),
+`redistribution`, `modification`, `status` (`approved|dev-only|blocked`),
+`inputs`/`outputs` (`name`, `element_type` `float32|int64|uint8`, `shape` with
+`-1` for dynamic), `precision` (`fp32|fp16|int8`).
 
 ```go
-	// arandu:begin custom
-	if a == OnnxView && (s.ID == record.ID || s.HasRole("admin")) {
-		return nil
-	}
-	// arandu:end custom
+manifest, err := onnx.LoadManifest(body)
+session, err := runtime.Open(manifest, dir)
+result, err := session.Run(ctx, map[string]onnx.Tensor{"x": input})
 ```
 
-What is not written there stays closed, including every action added later.
-There are five actions — `OnnxView`, `OnnxList`, `OnnxCreate`,
-`OnnxUpdate`, `OnnxDelete` — and opening one opens exactly one.
+Record `result.Model` with whatever the application derives from
+`result.Outputs`.
 
-**Do not open it from the application.** There is no hook, no override and no
-config flag for the policy, and adding one would be a second place where
-authorization is decided. If the rules this application needs are not the rules
-the package ships, the change belongs in the package.
+## Symptoms to recognise
 
-## What the answers mean
-
-| status | what happened |
-| --- | --- |
-| `403` | the policy refused, or no rule allows the action yet |
-| `404` | no row with that id in this tenant |
-| `422` | the input was rejected; the body names the fields |
-
-A refusal carries no detail beyond the status and a word. Telling a client why a
-policy said no tells it what exists and what does not, one request at a time.
-The reason is in the log.
-
-Anything else is a 500 and the framework's error page in development. The
-package returns unexpected errors rather than swallowing them, so a route that
-answers 200 with an empty body is not something it does.
-
-## Reporting a problem
-
-Issues and pull requests go to the repository the module path names,
-`github.com/kuaa-io/arandu-onnx`, which belongs to `paulorlima9`. A vulnerability goes to the
-private advisory form named in that repository's `SECURITY.md`, and never into
-an issue.
-
-MIT licensed. Copyright Paulo R. Lima.
+- **Boot fails with `ONNX Runtime library unavailable`.** The library is not at
+  the path, cannot be loaded (the loader's message follows, often a missing
+  dependency), or is older than the C API version the binding requests.
+- **`model digest mismatch`.** The file is not the one the manifest recorded.
+  Do not edit the digest to make it pass; find out where the file came from.
+- **`model blocked`.** The manifest says the model must not run.
+- **`model contract mismatch`.** The graph's inputs or outputs are not the
+  manifest's: wrong name, element type, rank or fixed dimension.
+- **`invalid tensor`.** An input is missing, extra, of the wrong type, or its
+  data does not fill its shape.
+- **`Providers()` shows `coreml` or `cuda` unavailable.** The library was built
+  without it; the session runs on the CPU and `ModelInfo.Provider` says so.

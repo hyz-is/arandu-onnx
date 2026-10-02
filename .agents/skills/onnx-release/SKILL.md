@@ -1,6 +1,6 @@
 ---
 name: onnx-release
-description: Get this Arandu package green, declared and published. Use when the request is to "run the gates", "check it builds", "the tests fail", "go build says the directory prefix does not contain modules listed in go.work", "aru doctor says this is not an Arandu project", "update arandu.mod.toml", "add a dependency", "bump the framework", "tag a release", "publish it", "go get cannot find the module", "write the changelog", or before opening a pull request. Covers the four gates and why each filter is there, what the manifest declares and who checks it, the immutability of a published module version, and what breaks somebody else's build.
+description: Get this Arandu package green, declared and published. Use when the request is to "run the gates", "check it builds", "the tests fail", "go build says the directory prefix does not contain modules listed in go.work", "aru doctor says this is not an Arandu project", "update arandu.mod.toml", "add a dependency", "bump the framework", "tag a release", "publish it", "go get cannot find the module", "write the changelog", or before opening a pull request. Covers the four gates and why each filter is there, CGO_ENABLED and the ONNX Runtime library,, what the manifest declares and who checks it, the immutability of a published module version, and what breaks somebody else's build.
 license: MIT
 ---
 
@@ -11,7 +11,7 @@ license: MIT
 Nothing is finished until all four exit zero.
 
 ```sh
-export GOWORK=off
+export GOWORK=off CGO_ENABLED=1
 gofmt -l $(find . -name '*.go' -not -path '*/testdata/*' -not -name '*.kyse.go')
 go build ./...
 go vet ./...
@@ -37,15 +37,12 @@ whatever happens to be checked out beside you.
 project: no go.mod, main.go and arandu.toml together"* — it reads applications,
 and this is a library.
 
-CI runs the same four. It also runs `go vet configure.go` by name while the
-template section is still in the workflow, because the build tag on that file
-keeps it out of `./...`.
+`CGO_ENABLED=1` is not optional: the ONNX Runtime binding is cgo. The tests
+that load a model need the shared library at `DefaultSharedLibraryPath()`, and
+skip with the loader's message where it is absent. A run where they skipped
+has not tested the runtime; read the skip lines before calling it green.
 
-The template has two build subjects, and both are release gates: the raw clone
-and a clean copy after `configure.go` substitutes every name. Run build, vet,
-and race on both. Preserve a built configurator long enough to invoke it again
-inside the configured copy; it must refuse and the tree hash must be identical
-before and after that refusal.
+CI runs the same four.
 
 ## What the manifest declares, and who reads it
 
@@ -55,15 +52,15 @@ inside and never loads a dependency, so the manifest of an installed package is
 opened by nothing but that package's own suite.
 
 ```toml
-name = "paulorlima9/onnx"
+name = "kuaa-io/onnx"
 framework = ">= 0.50"
 profiles = ["conventional", "performance"]
 
 [permissions]
 network = false
-filesystem = false
+filesystem = true
 exec = false
-migrations = true
+migrations = false
 ```
 
 `TestTheDeclaredCapabilitiesAreWhatTheCodeDoes`, in `tests/Unit/audit_test.go`,
@@ -84,8 +81,9 @@ own code; here both fail the suite, because `go test` has one outcome:
 | `permission-not-used` | warning | the manifest says `true` and nothing does it. Asking for more than you need is how a permission model erodes into everyone declaring everything |
 
 So a dependency or a call added here is a line changed in `arandu.mod.toml` in
-the same commit. `migrations = true` is the one this package already declares,
-and it is what tells an installer to run `aru migrate` before deploying.
+the same commit. `filesystem = true` is the one this package declares: it reads
+model files and checks that the library path exists. The cgo link to ONNX
+Runtime has no key in the manifest, so its comment says it.
 
 The `framework` line is a floor, and it is a second declaration of something
 `go.mod` already says. Move both together when you bump.
@@ -97,7 +95,12 @@ second `require` is a download and an audit surface for every project that
 installs the package, and the framework's own rule is a core with no third-party
 dependency beyond `golang.org/x/crypto`.
 
-What is already here is the framework and the components module it is built on:
+What is already here is the framework, the components module it is built on,
+and `github.com/yalue/onnxruntime_go` -- the cgo binding to ONNX Runtime. Its
+version is pinned to the release whose embedded header requests a C API version
+the supported library serves (v1.31.0 requests 26; ONNX Runtime 1.26 and later
+serve it). Moving it moves the minimum library version, which is a changelog
+and upgrade-note line:
 
 ```sh
 export GOWORK=off
@@ -112,12 +115,13 @@ same commit if it can reach the network, the filesystem or another process.
 
 A published Go module version is **immutable**. The proxy serves it forever, and
 a mistake is corrected by another release, never by moving a tag. That is the
-reason `CHANGELOG.md` says so and the reason a migration name is fixed once it
+reason `CHANGELOG.md` says so and the reason a manifest key is fixed once it
 has shipped.
 
 Before tagging:
 
-- the four gates pass with `GOWORK=off`;
+- the four gates pass with `GOWORK=off` and `CGO_ENABLED=1`, with the runtime
+  tests run rather than skipped;
 - `arandu.mod.toml` matches the code;
 - `CHANGELOG.md` has the entry, under the version, in the Keep a Changelog
   sections — `Added`, `Changed`, `Fixed`, `Removed`.
@@ -128,28 +132,23 @@ build that stops in somebody else's repository, weeks later, when they upgrade,
 with an error about a struct literal they did not write. Say what it was, what
 it is, and what they have to write instead.
 
-Run `apidiff` against the release baseline and enumerate every removal. A move
-from CRUD Repository to Model-first normally removes the Repository type,
-constructor and methods and changes Service constructors/results to database
-and entity pointers. Keeping `ErrNotFound` in `model.go` is not a removal just
-because its source file changed.
+Run `apidiff` against the release baseline and enumerate every removal.
 
 Three changes break an installer without touching a signature, and each one is
 worth a line in the changelog:
 
-- **A route name.** URLs are built from names, so a rename is a 404 in a
-  template somebody else wrote.
-- **A migration name.** Changing what an applied name means leaves the change
-  missing everywhere it already ran, and nothing says so.
-- **A default.** `DefaultPrefix` and `DefaultPageSize` are what an application
-  gets by leaving the field empty, so moving one moves behaviour in every
-  project that never mentioned it.
+- **A manifest field.** Manifests are JSON files beside models in other
+  repositories, and unknown keys are refused, so a renamed key is every
+  installer's models refusing to open.
+- **The minimum library version.** Moving the binding can make a machine that
+  worked fail `Init`.
+- **A default.** `DefaultSharedLibraryPath()` and the provider order are what an
+  application gets by leaving the field empty, so moving one moves behaviour in
+  every project that never mentioned it.
 
 ## Reporting a vulnerability
 
 Not in an issue and not in a pull request. `SECURITY.md` has the private
-advisory address. Anything that lets a caller reach data a policy did not
-authorize is in scope — a handler that reaches a Model or database directly, a
-Model terminal before `Authorize`, disabled tenant scope, a `Grant` produced
-without a Policy returning nil, or a field reaching a response that `Resource`
-does not list.
+advisory address. Anything that lets a model run without its digest verified,
+a blocked model load, a file outside the model directory be read, or an input
+crash the process is in scope.

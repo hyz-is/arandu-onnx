@@ -5,7 +5,7 @@
 # calls and then holds an HTTP client is rejected, which is what makes the
 # four lines below worth reading before installing anything.
 
-name = "paulorlima9/onnx"
+name = "kuaa-io/onnx"
 framework = ">= 0.50"
 profiles = ["conventional", "performance"]
 
