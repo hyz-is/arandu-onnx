@@ -10,12 +10,11 @@ framework = ">= 0.50"
 profiles = ["conventional", "performance"]
 
 [permissions]
-# It answers requests and reads its own rows. Nothing leaves the process.
+# It answers no request and opens no connection. Nothing leaves the process.
 network = false
-# It keeps no state outside the database.
+# It keeps no state outside the process.
 filesystem = false
 # It runs no other program.
 exec = false
-# module.go owns the onnxs table, so whoever installs this has to run
-# `aru migrate`. Declaring it is how they find that out before deploying.
-migrations = true
+# It owns no table.
+migrations = false

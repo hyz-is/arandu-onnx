@@ -38,7 +38,10 @@ jobs:
           test -z "$unformatted" || { echo "$unformatted"; exit 1; }
           GOWORK=off go build ./...
           GOWORK=off go vet ./...
-          GOWORK=off go vet configure.go
+          # configure.go is not vetted here. It carries a build tag, so it is
+          # not part of ./..., and the template deletes it once a clone has been
+          # configured -- naming it makes the archive check fail on every module
+          # that did what the template asks.
           GOWORK=off go test -race -count=1 ./...
 
       - name: Audit known vulnerabilities
