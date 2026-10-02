@@ -12,9 +12,14 @@ profiles = ["conventional", "performance"]
 [permissions]
 # It answers no request and opens no connection. Nothing leaves the process.
 network = false
-# It keeps no state outside the process.
-filesystem = false
-# It runs no other program.
+# It reads model files from the directory the application names, and checks
+# that the shared library it was told to load exists. It writes nothing.
+filesystem = true
+# It runs no other program. It does link one: ONNX Runtime, loaded with dlopen
+# through cgo (github.com/yalue/onnxruntime_go). That is not exec and the
+# manifest has no key for it, so it is said here instead -- an application
+# registering this module builds with CGO_ENABLED=1 and needs the ONNX Runtime
+# shared library on the machine it runs on.
 exec = false
 # It owns no table.
 migrations = false
