@@ -22,7 +22,7 @@ type ModelInfo struct {
 	// SHA256 is the digest of the file that was verified and loaded.
 	SHA256 string
 	// Runtime is the inference runtime and its version, such as
-	// "onnxruntime 1.27.1".
+	// "onnxruntime 1.30.0".
 	Runtime string
 	// Precision is the manifest's numeric precision.
 	Precision Precision

@@ -225,7 +225,7 @@ func (r *Runtime) usable() error {
 	}
 }
 
-// Version is the version of the loaded ONNX Runtime library, such as 1.27.1.
+// Version is the version of the loaded ONNX Runtime library, such as 1.30.0.
 // It is empty before Init.
 func (r *Runtime) Version() string {
 	r.mu.RLock()

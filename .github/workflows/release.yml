@@ -33,7 +33,7 @@ jobs:
       - name: install ONNX Runtime
         run: |
           set -euo pipefail
-          version=1.27.1
+          version=1.30.0
           curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${version}/onnxruntime-linux-x64-${version}.tgz" \
             | tar -xz -C "$RUNNER_TEMP"
           sudo cp -P "$RUNNER_TEMP/onnxruntime-linux-x64-${version}/lib/"libonnxruntime*.so* /usr/local/lib/
