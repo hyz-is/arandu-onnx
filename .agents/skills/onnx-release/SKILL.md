@@ -52,7 +52,7 @@ inside and never loads a dependency, so the manifest of an installed package is
 opened by nothing but that package's own suite.
 
 ```toml
-name = "kuaa-io/onnx"
+name = "hyz-is/onnx"
 framework = ">= 0.50"
 profiles = ["conventional", "performance"]
 

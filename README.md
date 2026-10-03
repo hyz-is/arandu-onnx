@@ -49,7 +49,7 @@ testing code that only constructs the module needs neither.
 ## Install
 
 ```bash
-go get github.com/kuaa-io/arandu-onnx
+go get github.com/hyz-is/arandu-onnx
 ```
 
 ## Wire it
@@ -62,7 +62,7 @@ The import, with the other module imports:
 
 ```go
 import (
-	onnx "github.com/kuaa-io/arandu-onnx"
+	onnx "github.com/hyz-is/arandu-onnx"
 )
 ```
 

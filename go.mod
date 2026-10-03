@@ -1,4 +1,4 @@
-module github.com/kuaa-io/arandu-onnx
+module github.com/hyz-is/arandu-onnx
 
 go 1.26.0
 

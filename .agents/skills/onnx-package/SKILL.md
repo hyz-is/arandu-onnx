@@ -1,6 +1,6 @@
 ---
 name: onnx-package
-description: Install, wire and use the Arandu ONNX package (Go, Arandu) in an application. Use when the request is to "install arandu-onnx", "run an ONNX model", "add ONNX Runtime", "go get github.com/kuaa-io/arandu-onnx", "wire it into bootstrap/app.go", "the app fails to boot with ONNX Runtime library unavailable", "dlopen failed", "model digest mismatch", "model blocked", "model contract mismatch", "use CoreML", "use CUDA", "write a model manifest", or when a project's go.mod already requires github.com/kuaa-io/arandu-onnx. Covers the build requirement, the wiring and where it goes, the three Config fields, manifests, and what each error means.
+description: Install, wire and use the Arandu ONNX package (Go, Arandu) in an application. Use when the request is to "install arandu-onnx", "run an ONNX model", "add ONNX Runtime", "go get github.com/hyz-is/arandu-onnx", "wire it into bootstrap/app.go", "the app fails to boot with ONNX Runtime library unavailable", "dlopen failed", "model digest mismatch", "model blocked", "model contract mismatch", "use CoreML", "use CUDA", "write a model manifest", or when a project's go.mod already requires github.com/hyz-is/arandu-onnx. Covers the build requirement, the wiring and where it goes, the three Config fields, manifests, and what each error means.
 license: MIT
 ---
 
@@ -22,7 +22,7 @@ Runtime project, with `libonnxruntime.so` on the loader's path or named in
 ## Install
 
 ```bash
-go get github.com/kuaa-io/arandu-onnx
+go get github.com/hyz-is/arandu-onnx
 ```
 
 ## The wiring, and where it goes
@@ -31,7 +31,7 @@ All of it is in `bootstrap/app.go`.
 
 ```go
 import (
-	onnx "github.com/kuaa-io/arandu-onnx"
+	onnx "github.com/hyz-is/arandu-onnx"
 )
 ```
 

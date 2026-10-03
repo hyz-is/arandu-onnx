@@ -12,7 +12,7 @@ import (
 	"math"
 	"testing"
 
-	onnx "github.com/kuaa-io/arandu-onnx"
+	onnx "github.com/hyz-is/arandu-onnx"
 )
 
 // gray builds a one-row image of grey levels.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	onnx "github.com/kuaa-io/arandu-onnx"
+	onnx "github.com/hyz-is/arandu-onnx"
 )
 
 // manifestJSON is a complete manifest as a model directory would carry it.

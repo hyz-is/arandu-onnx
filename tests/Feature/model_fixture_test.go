@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	onnx "github.com/kuaa-io/arandu-onnx"
+	onnx "github.com/hyz-is/arandu-onnx"
 )
 
 // The models these tests run are written here, byte by byte, as the protobuf

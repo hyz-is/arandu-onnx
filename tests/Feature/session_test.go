@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	onnx "github.com/kuaa-io/arandu-onnx"
+	onnx "github.com/hyz-is/arandu-onnx"
 )
 
 // These tests load real models into the ONNX Runtime library on this machine.

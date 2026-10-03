@@ -61,4 +61,4 @@ Do not open an issue. See [SECURITY.md](SECURITY.md).
 ## Licence
 
 By contributing you agree that your contribution is licensed under the MIT
-licence, the same as the rest of github.com/kuaa-io/arandu-onnx.
+licence, the same as the rest of github.com/hyz-is/arandu-onnx.
