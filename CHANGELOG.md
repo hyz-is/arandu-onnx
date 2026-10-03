@@ -10,15 +10,20 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-03
+
+The first public release, as `github.com/hyz-is/arandu-onnx`.
+
 ### Added
 
 - `Runtime`: loads the ONNX Runtime shared library named by `Config`
   (`SharedLibraryPath`, `IntraOpThreads`, `Providers`), probes `cpu`, `coreml`
   and `cuda`, and falls back to the CPU. `Init` and `Close` are idempotent and
-  safe for concurrent use.
+  safe for concurrent use. One library per process, shared by reference count.
 - `Manifest` and `LoadManifest`: model provenance (digest, source, licences,
   commercial use, redistribution, modification, status, precision) and
-  contract (inputs, outputs).
+  contract (inputs, outputs). Unknown keys are refused; `file` may not leave
+  the model directory.
 - `Runtime.Open`: refuses `blocked`, verifies the SHA-256 before ONNX Runtime
   sees the file, builds the session from the verified bytes, and checks the
   graph against the manifest.
@@ -27,10 +32,10 @@ a release is corrected by another release and never by moving a tag.
   `Result`.
 - Image helpers: `DecodeImage` (JPEG/PNG, EXIF orientation, pixel ceiling),
   `Resize`, `Letterbox`, `Crop`, `NCHW`.
-- `Module`: `foundation.Module` with no route, plus `Bootable`, `Health` and
-  `Closable` over the runtime.
+- `Module`: `foundation.Module` with no route and no table, plus `Bootable`,
+  `Health` and `Closable` over the runtime.
 
-### Removed
+### Requirements
 
-- The package skeleton's demo entity: model, policy, service, views, migration
-  and routes. This module owns no table.
+- Go 1.26, `CGO_ENABLED=1`, `github.com/yalue/onnxruntime_go` v1.31.0.
+- ONNX Runtime 1.26 or later (C API 26). CI and release run against 1.30.0.

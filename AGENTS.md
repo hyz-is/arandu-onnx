@@ -1,8 +1,9 @@
 # Working on Arandu ONNX
 
 This is an Arandu package that runs ONNX models through ONNX Runtime and
-answers with tensors. It is the shared runtime KUAA's engine modules
-(`arandu-paddleocr`, `arandu-face`, `arandu-liveness`) build on: a runtime, a
+answers with tensors. It is the shared runtime the engine modules
+(`arandu-paddleocr`, `arandu-face`, `arandu-liveness`, all under
+`github.com/hyz-is`) build on: a runtime, a
 model registry with provenance, sessions, and the image helpers vision engines
 need.
 It is a Go module somebody `go get`s and registers by hand in their own
@@ -13,9 +14,11 @@ line of wiring is not written in the installer's repository, it does not happen.
 Read `.agents/skills/` before writing code. Each skill is a procedure, and the
 one you need is named by the situation you are in.
 
-## The KUAA rules
+## The rules
 
-These come from the project, not from taste. A change that breaks one is not
+These come from the engines' design, not from taste. They were written for
+KUAA, the identity-verification application these engines were built for, and
+they hold for every installer. A change that breaks one is not
 merged.
 
 1. **No decisions in an engine, and none here.** This package returns

@@ -22,7 +22,7 @@ Runtime project, with `libonnxruntime.so` on the loader's path or named in
 ## Install
 
 ```bash
-go get github.com/hyz-is/arandu-onnx
+go get github.com/hyz-is/arandu-onnx@v0.1.0
 ```
 
 ## The wiring, and where it goes
