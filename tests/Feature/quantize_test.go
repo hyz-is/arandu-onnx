@@ -438,3 +438,62 @@ func TestCheckTensorRTNamesWhatTensorRTWouldRefuse(t *testing.T) {
 		}
 	}
 }
+
+func TestAModelDeclaredQDQOpensOnlyInTheFormTensorRTRuns(t *testing.T) {
+	rt := newRuntime(t, onnx.Config{})
+	float := convNet(13)
+	table := calibrateConvNet(t, rt, float, "y")
+	exported, _ := export(t, float, table, quantize.Options{})
+
+	declared := convManifest("y")
+	declared.Precision = onnx.PrecisionINT8
+	declared.Quantization = onnx.QuantizationQDQ
+
+	m, dir := writeModel(t, declared, exported)
+	session, err := rt.Open(m, dir)
+	if err != nil {
+		t.Fatalf("opening the export declared qdq: %v", err)
+	}
+	if info := session.Model(); info.Precision != onnx.PrecisionINT8 {
+		t.Errorf("ModelInfo.Precision = %s", info.Precision)
+	}
+	_ = session.Close()
+
+	// The float model, and an asymmetric uint8 QDQ, declared qdq.
+	uint8ZeroPoint := message{}.integer(2, int64(protoUint8)).text(8, "zp").bytes(9, []byte{128})
+	asymmetric := message{}.
+		sub(1, node("QuantizeLinear", []string{"x", "s", "zp"}, []string{"q"})).
+		sub(1, node("DequantizeLinear", []string{"q", "s", "zp"}, []string{"y"})).
+		text(2, "asymmetric").
+		sub(5, floatInitializer("s", []float32{0.1})).
+		sub(5, uint8ZeroPoint).
+		sub(11, valueInfo("x", protoFloat, 4)).
+		sub(12, valueInfo("y", protoFloat, 4))
+	asymmetricManifest := syntheticManifest("asymmetric", "x", 1, "y", 1)
+	asymmetricManifest.Precision = onnx.PrecisionINT8
+	asymmetricManifest.Quantization = onnx.QuantizationQDQ
+
+	for name, tc := range map[string]struct {
+		m    onnx.Manifest
+		body []byte
+	}{
+		"the float model":   {declared, float},
+		"an asymmetric QDQ": {asymmetricManifest, modelAt(asymmetric, 7, 13)},
+	} {
+		m, dir := writeModel(t, tc.m, tc.body)
+		if _, err := rt.Open(m, dir); !errors.Is(err, onnx.ErrContractMismatch) || !strings.Contains(err.Error(), "declares quantization qdq") {
+			t.Errorf("%s: Open = %v, want ErrContractMismatch", name, err)
+		}
+	}
+
+	// Without the declaration, an asymmetric int8 model still opens, as in
+	// v0.2.0: the check is what qdq promises, not a new rule for every int8
+	// manifest.
+	asymmetricManifest.Quantization = ""
+	m, dir = writeModel(t, asymmetricManifest, modelAt(asymmetric, 7, 13))
+	if s, err := rt.Open(m, dir); err != nil {
+		t.Errorf("an int8 model without the declaration: %v", err)
+	} else {
+		_ = s.Close()
+	}
+}

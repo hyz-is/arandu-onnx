@@ -15,7 +15,9 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 
 	"github.com/hyz-is/arandu-onnx/calibration"
+	"github.com/hyz-is/arandu-onnx/graph"
 	"github.com/hyz-is/arandu-onnx/internal/onnxgraph"
+	"github.com/hyz-is/arandu-onnx/quantize"
 )
 
 // acceleratedBuilds serialises the building of sessions on an accelerator,
@@ -37,7 +39,9 @@ var acceleratedBuilds sync.Mutex
 // same bytes, so what was verified is what runs. The graph's inputs and
 // outputs are compared with the manifest's before the session is returned. A
 // calibration table the manifest carries is verified the same way, and parsed,
-// and only the verified bytes are written where TensorRT reads them.
+// and only the verified bytes are written where TensorRT reads them. A model
+// whose manifest declares quantization qdq is checked to be in the QDQ form
+// TensorRT runs (quantize.CheckTensorRT).
 //
 // A model whose graph keeps its weights in external data files cannot be
 // opened this way, because a session built from memory does not read them.
@@ -70,6 +74,9 @@ func (r *Runtime) OpenOn(m Manifest, dir string, device int) (*Session, error) {
 		return nil, err
 	}
 	if err := checkContract(m, data); err != nil {
+		return nil, err
+	}
+	if err := checkQuantization(m, data); err != nil {
 		return nil, err
 	}
 	table, err := readCalibration(m, dir, data)
@@ -123,6 +130,23 @@ func readVerified(m Manifest, dir string) ([]byte, error) {
 			ErrDigestMismatch, m.ID, path, got, m.SHA256)
 	}
 	return data, nil
+}
+
+// checkQuantization holds a model whose manifest declares QuantizationQDQ to
+// the form TensorRT runs, so that a QOperator, dynamic or asymmetric export
+// pinned as qdq is refused at Open rather than found on a GPU node.
+func checkQuantization(m Manifest, data []byte) error {
+	if m.Quantization != QuantizationQDQ {
+		return nil
+	}
+	model, err := graph.Load(data)
+	if err != nil {
+		return fmt.Errorf("%w: %s: reading the graph: %v", ErrContractMismatch, m.ID, err)
+	}
+	if err := quantize.CheckTensorRT(model); err != nil {
+		return fmt.Errorf("%w: %s declares quantization %s: %v", ErrContractMismatch, m.ID, m.Quantization, err)
+	}
+	return nil
 }
 
 // readCalibration reads, verifies and parses the manifest's calibration

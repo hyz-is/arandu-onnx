@@ -118,10 +118,26 @@ type Manifest struct {
 	Outputs []TensorSpec `json:"outputs"`
 	// Precision is the numeric precision of the weights.
 	Precision Precision `json:"precision"`
+	// Quantization is how an int8 model carries its quantization. Empty
+	// says nothing about it; QuantizationQDQ declares the explicit form
+	// TensorRT runs, and Open checks the graph is in it.
+	Quantization Quantization `json:"quantization,omitempty"`
 	// Calibration is the INT8 calibration table that lets TensorRT run this
 	// float model in INT8. Nil for a model without one.
 	Calibration *Calibration `json:"calibration,omitempty"`
 }
+
+// Quantization is the form of an int8 model's quantization.
+type Quantization string
+
+// The quantizations a Manifest may declare.
+const (
+	// QuantizationQDQ is explicit quantization in the form TensorRT runs:
+	// QuantizeLinear and DequantizeLinear nodes with int8 zero points of 0,
+	// positive scales, per-channel weights and float biases, as
+	// quantize.QDQ writes it and quantize.CheckTensorRT checks it.
+	QuantizationQDQ Quantization = "qdq"
+)
 
 // ErrInvalidManifest is wrapped by every error that reports a manifest which
 // cannot be used.
@@ -209,6 +225,15 @@ func (m Manifest) Validate() error {
 	}
 	if err := validateSpecs("outputs", m.Outputs); err != nil {
 		return fail("%v", err)
+	}
+	switch m.Quantization {
+	case "":
+	case QuantizationQDQ:
+		if m.Precision != PrecisionINT8 {
+			return fail("quantization %q is the form of an int8 model, and precision is %q", m.Quantization, m.Precision)
+		}
+	default:
+		return fail("quantization %q has to be %q", m.Quantization, QuantizationQDQ)
 	}
 	if m.Calibration != nil {
 		if err := m.Calibration.validate(m); err != nil {
