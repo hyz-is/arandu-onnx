@@ -274,7 +274,7 @@ func planCol2Im(g *graph.Graph, n *graph.Node, opts Col2ImOptions) (col2imPlan, 
 	case recorded > 0 && hinted && hint != recorded:
 		return fail("input %q has %d channels in the graph and %d in the options", input, recorded, hint)
 	case recorded <= 0 && !hinted:
-		return fail("the graph does not record dimension 1 of input %q, and the grouped ConvTranspose needs it: give it in Col2ImOptions.InputChannels (arandu-onnx-rewrite measures it on ONNX Runtime)", input)
+		return fail("the graph does not record dimension 1 of input %q, and the grouped ConvTranspose needs it: give it in Col2ImOptions.InputChannels (arandu-onnx-rewrite -channels tensor=size)", input)
 	case recorded <= 0:
 		recorded = hint
 	}
