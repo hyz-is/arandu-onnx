@@ -1,6 +1,6 @@
 ---
 name: onnx-package
-description: Install, wire and use the Arandu ONNX package (Go, Arandu) in an application. Use when the request is to "install arandu-onnx", "run an ONNX model", "add ONNX Runtime", "go get github.com/hyz-is/arandu-onnx", "wire it into bootstrap/app.go", "the app fails to boot with ONNX Runtime library unavailable", "dlopen failed", "model digest mismatch", "model blocked", "model contract mismatch", "use CoreML", "use CUDA", "use TensorRT", "run INT8 on a T4", "calibrate a model", "calibration table", "model work fell back to the CPU", "open a model on the second GPU", "write a model manifest", or when a project's go.mod already requires github.com/hyz-is/arandu-onnx. Covers the build requirement, the wiring and where it goes, the Config fields, NVIDIA TensorRT and INT8, calibration, manifests, and what each error means.
+description: Install, wire and use the Arandu ONNX package (Go, Arandu) in an application. Use when the request is to "install arandu-onnx", "run an ONNX model", "add ONNX Runtime", "go get github.com/hyz-is/arandu-onnx", "wire it into bootstrap/app.go", "the app fails to boot with ONNX Runtime library unavailable", "dlopen failed", "model digest mismatch", "model blocked", "model contract mismatch", "use CoreML", "use CUDA", "use TensorRT", "run INT8 on a T4", "calibrate a model", "calibration table", "rewrite Col2Im", "MiVOLO Col2Im on the CPU", "export QDQ", "quantize to INT8 for TensorRT 11", "quantization qdq", "not the QDQ form TensorRT runs", "model work fell back to the CPU", "open a model on the second GPU", "write a model manifest", or when a project's go.mod already requires github.com/hyz-is/arandu-onnx. Covers the build requirement, the wiring and where it goes, the Config fields, NVIDIA TensorRT and INT8, calibration, manifests, and what each error means.
 license: MIT
 ---
 
@@ -22,7 +22,7 @@ Runtime project, with `libonnxruntime.so` on the loader's path or named in
 ## Install
 
 ```bash
-go get github.com/hyz-is/arandu-onnx@v0.2.0
+go get github.com/hyz-is/arandu-onnx@v0.3.0
 ```
 
 ## The wiring, and where it goes
@@ -124,7 +124,7 @@ Record `result.Model` with whatever the application derives from
 - INT8 needs either a QDQ model (`"precision": "int8"`) or a float model with
   a `calibration` entry in its manifest. TensorRT below 11 for the table.
 - Write the table with
-  `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-calibrate@v0.2.0`
+  `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-calibrate@v0.3.0`
   (images, raw float32 tensors, or synthetic inputs for tests only) or with
   `runtime.Calibrate` from Go; add the entry it prints to the manifest. The
   samples are what the model sees in production; for faces and documents
@@ -132,3 +132,25 @@ Record `result.Model` with whatever the application derives from
 - `session.Placement()` says which provider got which nodes; record it with the
   boot report. `config.Plan(manifest, device)` shows the options a session
   gets, on any machine.
+
+## Graph tools: Col2Im and QDQ
+
+- **A `Col2Im` node keeps a model on the CPU** (TensorRT and CUDA have no
+  kernel; MiVOLO has four). Rewrite it once, offline:
+  `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.3.0
+  -manifest <manifest> -out <model>.convtranspose.onnx`. It verifies the new
+  file against the old one on the CPU and prints the manifest to ship with
+  it. Calibrate the new file again if it is to use a table.
+- **INT8 for TensorRT 11 is QDQ only.** From a float model with a calibration
+  entry: `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-quantize@v0.3.0
+  -manifest <manifest> -out <model>.qdq.onnx` (`-mode conv` by default,
+  `-mode conv-matmul`, `-exclude-prefix` for heads). Ship it with the printed
+  manifest (`"precision": "int8"`, `"quantization": "qdq"`) and measure it
+  against FP16 on the card before switching.
+- **`declares quantization qdq: ... not the QDQ form TensorRT runs`** at
+  `Open`: the file pinned as qdq is asymmetric, uint8, QOperator or has a
+  dequantized bias. Export it again with `arandu-onnx-quantize`; downloaded
+  "int8" files are usually one of those forms.
+- From Go: `graph.Load`, `rewrite.Col2ImToConvTranspose`, `quantize.QDQ`,
+  `quantize.CheckTensorRT`, `Model.Marshal`. None reads a file or loads
+  ONNX Runtime.

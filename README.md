@@ -40,6 +40,13 @@ What it holds:
   status) to every result, for the caller to record as evidence.
 - **Image helpers** — decode JPEG/PNG upright by EXIF orientation, bilinear
   resize, letterbox, crop, and NCHW normalisation. Pure Go.
+- **Graph tools, in Go** — `graph` loads, edits and writes ONNX models losslessly;
+  `rewrite.Col2ImToConvTranspose` replaces `Col2Im`, which TensorRT lacks, with
+  an exact grouped `ConvTranspose`; `quantize.QDQ` exports symmetric INT8 QDQ
+  from a calibration table and `quantize.CheckTensorRT` checks any model
+  against TensorRT's QDQ rules. The `arandu-onnx-rewrite` and
+  `arandu-onnx-quantize` commands run them, verify the result on the CPU and
+  print the new file's manifest.
 
 ## What it is not
 
@@ -91,7 +98,7 @@ are defaults, not requirements.
 ## Install
 
 ```bash
-go get github.com/hyz-is/arandu-onnx@v0.2.0
+go get github.com/hyz-is/arandu-onnx@v0.3.0
 ```
 
 ## Wire it
@@ -215,8 +222,10 @@ other's engines.
 
 `TensorRT.INT8` lets TensorRT run INT8 where a model can:
 
-- a **QDQ model** (manifest `"precision": "int8"`) carries its scales in the
-  graph, and runs in INT8 with no table;
+- a **QDQ model** (manifest `"precision": "int8"`, and `"quantization": "qdq"`
+  for one `Open` checks is in the form TensorRT runs) carries its scales in
+  the graph, and runs in INT8 with no table. It is the only INT8 TensorRT 11
+  runs; `arandu-onnx-quantize` writes one from a calibration table (below);
 - a **float model with a calibration table** (manifest `"precision": "fp32"`
   and a `calibration` entry) is implicit quantization: TensorRT runs in INT8
   every tensor the table names, and in FP16 (`FP16`) or FP32 the rest. This is
@@ -262,7 +271,7 @@ The two formats, both read by ONNX Runtime's TensorRT provider
 ### Producing a table, in Go
 
 ```bash
-go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-calibrate@v0.2.0 \
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-calibrate@v0.3.0 \
   -manifest models/det/manifest.json \
   -images /secure/calibration/det -size 640x640 -letterbox -mean 0,0,0 -std 1,1,1 \
   -method minmax -exclude-prefix /model/model.22/ -exclude boxes,scores \
@@ -316,6 +325,113 @@ is not on an accelerator: every accelerator failed and the CPU is left; the
 provider asked for first got no node; a node other than the shape arithmetic in
 `DefaultCPUOps()` is on the CPU; or the placement could not be captured, since
 an unmeasured placement is not a clean one.
+
+## Graph tools: the Col2Im rewrite and the QDQ export
+
+Two things stand between some float models and a T4 running them entirely
+in TensorRT: an operator neither TensorRT nor the CUDA provider has, and
+INT8 that TensorRT 11 only takes as QDQ. Both are fixed by editing the
+graph, in Go, with three packages and two commands that are not linked
+into an application.
+
+| package | what it is |
+| --- | --- |
+| `graph` | `Load` and `Model.Marshal`: an ONNX model decoded into nodes, attributes, initializers and value info a rewrite can change. Every field it does not interpret (doc strings, metadata, functions, subgraphs, external-data references, quantization annotations) is kept as the bytes it read; a model loaded and marshalled unchanged is the same bytes again. Helpers find constants (initializers and `Constant` nodes), producers, consumers and recorded types, hand out fresh names, and check the topological order |
+| `rewrite` | `Col2ImToConvTranspose` |
+| `quantize` | `QDQ` and `CheckTensorRT` |
+
+### Col2Im without Col2Im
+
+`Col2Im` (opset 18, MiVOLO's four `torch.nn.Fold`) has no kernel in
+TensorRT or in ONNX Runtime's CUDA provider, so the graph is split between
+the card and the CPU. `rewrite.Col2ImToConvTranspose` replaces each node with
+an exact equivalent:
+
+```
+Col2Im(x [N, C·K, L], image_shape, block_shape)            K = ∏ block_shape
+  ≡ Reshape(x, [0, C·K, L1, …, Lr])                         L = ∏ Li
+    ConvTranspose(group = C, kernel_shape = block_shape,
+                  the same strides, pads and dilations,
+                  output_padding = the rows and columns no block reaches,
+                  W [C·K, 1, block_shape…] one-hot: channel c·K + j has a 1 at offset j)
+```
+
+`image_shape` and `block_shape` have to be constants and the input's
+dimension 1 known (value info, or `Col2ImOptions.InputChannels`); anything
+else is refused with `rewrite.ErrUnsupported` and the model is left as it
+was. The constants only `Col2Im` read are removed with it.
+
+```bash
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.3.0 \
+  -manifest models/age/manifest.json -models models \
+  -out models/age/mivolo_v2_age.convtranspose.onnx
+```
+
+The command reads the model through its manifest (digest checked), runs the
+original and the rewritten model on the CPU over `-verify` synthetic inputs
+(3 by default), and writes nothing when an output differs by more than
+`-tolerance` (1e-4). It writes the model, a `.report.json` beside it (nodes
+rewritten with every attribute, operator counts before and after, the
+measured difference) and prints the manifest of the new file. A calibration
+entry of the source is dropped: it pins the original file.
+
+On `mivolo_v2_age` (v2-8eb4cd8f5dd4), the four nodes are k 3, stride 2,
+pad 1 over 48×48 with 24×24 blocks and `output_padding` 1; 781 nodes become
+785, and the age output differs by 0 over 15 synthetic inputs on ONNX
+Runtime 1.30.0 CPU.
+
+### QDQ INT8 from a calibration table
+
+`quantize.QDQ` turns a float model and its `calibration.Table` into explicit
+quantization in the form TensorRT 10 accepts and TensorRT 11 requires:
+
+| what | how |
+| --- | --- |
+| activations | `QuantizeLinear` → `DequantizeLinear` per tensor, scale = range / 127, int8 zero point 0; one pair per tensor, shared by the quantized nodes that read it, while float nodes keep the float tensor |
+| weights | quantized here into int8 initializers, per output channel (axis 0 for `Conv`, 1 for `ConvTranspose` and `MatMul`, by `transB` for `Gemm`), scale = max\|w\| / 127, rounded half to even into [-127, 127], read by a `DequantizeLinear` with its `axis` and int8 zero points 0. The float initializers nothing reads any more are removed |
+| biases | left float32, with nothing in front of them: TensorRT refuses a dequantized bias and fuses it itself |
+| which nodes | `conv` (default): `Conv`, `ConvTranspose`. `conv-matmul`: also `MatMul` and `Gemm` with a constant 2-D weight. A product of two activations (attention) is never quantized. `ExcludeNodes`, `ExcludePrefixes` and `ExcludeOpTypes` keep heads, Softmax paths or LayerNorm neighbours in float, and a node whose input the table leaves out stays float |
+| opset | per-channel `DequantizeLinear` is opset 13. A model at 10 to 12 is raised when none of the operators whose meaning changed before 13 (Clip, Pad, Resize, Dropout, Softmax, LogSoftmax, Hardmax, Split, Squeeze, Unsqueeze, ReduceSum) is in it, and refused otherwise |
+
+An already quantized model, a table of another model, weights in external
+data, or options that leave nothing to quantize are refused with
+`quantize.ErrRefused`, and the model is left unchanged. The `Report` lists
+every node quantized and skipped (with the reason), every scale, and
+`ScalesSHA256`, a digest of all of them.
+
+`quantize.CheckTensorRT` checks any model, this package's or a downloaded
+one, against the same rules: constant positive scales, int8 zero points of
+0, per-channel scales matching their axis, no `DequantizeLinear` on an int32
+tensor or a bias, no QOperator (`QLinearConv`) or dynamic (`MatMulInteger`)
+node.
+
+```bash
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-quantize@v0.3.0 \
+  -manifest models/det/manifest.json \
+  -mode conv -exclude-prefix /model/model.22/ \
+  -out models/det/model.qdq.onnx
+```
+
+The table is the manifest's `calibration` entry (its digest checked) or
+`-table`. The command checks the export with `CheckTensorRT`, runs it against
+the float model on the CPU over synthetic inputs (`-low`, `-high`, `-verify`),
+holds the difference to `-tolerance` (a fraction of the largest float output)
+when it is given, writes the model and its `.report.json`, and prints its
+manifest:
+
+```json
+  "precision": "int8",
+  "quantization": "qdq"
+```
+
+A manifest that declares `"quantization": "qdq"` is opened only when
+`CheckTensorRT` accepts the graph, so an asymmetric or QOperator file pinned
+as QDQ is refused by `Open` (`ErrContractMismatch`) instead of being found
+on a GPU node. Without the key an int8 manifest behaves as in v0.2.0.
+
+The difference on synthetic inputs bounds the rounding; it is not the
+model's accuracy in INT8, which is measured on real samples against FP16 on
+the card that runs it.
 
 ## API overview
 
@@ -375,11 +491,16 @@ A manifest:
 - The licence fields are not interpreted by code. They are what a reviewer read
   before setting `status`, kept beside the file so every result can point back
   to them.
+- `quantization` is optional: `qdq`, with precision `int8`, declares the
+  explicit QDQ form TensorRT runs, and `Open` refuses a graph
+  `quantize.CheckTensorRT` does not accept.
 
 Errors are sentinels, for `errors.Is`: `ErrLibraryUnavailable`,
 `ErrNotInitialized`, `ErrClosed`, `ErrModelBlocked`, `ErrDigestMismatch`,
 `ErrContractMismatch`, `ErrInvalidManifest`, `ErrInvalidTensor`,
-`ErrImageTooLarge`, `ErrCPUFallback`, and `calibration.ErrInvalidTable`.
+`ErrImageTooLarge`, `ErrCPUFallback`, `calibration.ErrInvalidTable`,
+`graph.ErrMalformed`, `graph.ErrUnreadable`, `rewrite.ErrUnsupported`,
+`quantize.ErrRefused` and `quantize.ErrNotTensorRTQDQ`.
 
 `ModelInfo` also carries `Device` (the GPU of a `cuda` or `tensorrt` session)
 and `Calibration` (the digest of the table a `tensorrt` session was handed).
@@ -433,6 +554,14 @@ verified tables into the TensorRT cache directory) and nothing else, and
   subgraphs get no range and run at a higher precision. It runs on the CPU and
   reads float32 activations; a float16 model is calibrated from its float32
   export.
+- The graph tools edit the top-level graph only: nodes inside `If`, `Loop` and
+  `Scan` bodies and local functions are kept as they were read, never
+  rewritten or quantized. They read weights from the file, not from external
+  data, and the QDQ export refuses a model whose weights are external.
+- The QDQ export and the Col2Im rewrite are verified on the ONNX Runtime CPU
+  provider only. The TensorRT rules `CheckTensorRT` applies are those of the
+  TensorRT 10 documentation; that TensorRT builds an INT8 engine from an export,
+  its speed and its accuracy against FP16 are measured on a GPU node, not here.
 - Performance depends on the model, the provider and the machine. The engine
   modules publish measured figures for their own models.
 
@@ -447,6 +576,10 @@ verified tables into the TensorRT cache directory) and nothing else, and
   TensorRT is pointed only at the verified copy in the model's private cache
   directory (mode 0700). Anybody who can write that directory can swap an
   engine TensorRT will load, so it belongs to the application's user alone.
+- The rewrite and quantize commands read a model only through its manifest,
+  with its digest checked before it is decoded, and a calibration table from
+  the manifest only with its digest checked. What they write is a new file with
+  its own digest in the manifest they print; the source is never modified.
 - The TensorRT options that load a library (`trt_extra_plugin_lib_paths`,
   the engine decryption library), dump files elsewhere or take a raw pointer
   are refused in `TensorRTOptions.Extra`.

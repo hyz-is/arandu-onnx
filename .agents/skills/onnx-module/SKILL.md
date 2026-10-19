@@ -1,6 +1,6 @@
 ---
 name: onnx-module
-description: Change this Arandu package's runtime, manifests, sessions or image helpers. Use when the request is to "support another element type", "add a provider", "add TensorRT", "add a manifest field", "load a model by path", "skip the digest check", "add a threshold", "return a decision", "add an image helper", "resize differently", "add a route", or when a change touches runtime.go, manifest.go, session.go, tensor.go, image.go, exif.go, config.go or module.go. Covers what may and may not change, and the tests that hold each property.
+description: Change this Arandu package's runtime, manifests, sessions or image helpers. Use when the request is to "support another element type", "add a provider", "add TensorRT", "add a manifest field", "load a model by path", "skip the digest check", "add a threshold", "return a decision", "add an image helper", "resize differently", "add a route", "rewrite Col2Im", "convert the model for TensorRT", "edit the ONNX graph", "quantize to QDQ", "export INT8 for TensorRT 11", "check a QDQ model", or when a change touches runtime.go, manifest.go, session.go, tensor.go, image.go, exif.go, config.go, module.go, graph/, rewrite/, quantize/ or the commands in cmd/ Covers what may and may not change, and the tests that hold each property.
 license: MIT
 ---
 
@@ -93,3 +93,39 @@ preprocessing from references that use it.
 `Runtime.Open` holds the runtime's read lock for the whole load so the
 environment cannot be destroyed under it. Any change here runs
 `go test -race ./...` with the library present, and reads the skip lines.
+
+## Graph tools: graph, rewrite, quantize
+
+- **`graph` is lossless.** It decodes the fields a rewrite needs and keeps every
+  other field as the bytes it read. A new field it interprets is decoded,
+  re-encoded in ascending field order, and covered by the byte-for-byte
+  round-trip test in `tests/Feature/graph_test.go`; run the probe on a real
+  export too (MiVOLO round-trips identically). Never drop a field to make a
+  rewrite simpler. The package reads no file: the commands do.
+- **A rewrite is all or nothing.** Plan every node first, refuse with the
+  package's sentinel and leave the model unchanged, and only then edit; end
+  with `Graph.CheckTopological`. A refusal test asserts the marshalled bytes
+  are the input's.
+- **A rewrite is proven numerically.** A test runs the original and the
+  rewritten graph on ONNX Runtime CPU (hand-encoded fixtures, random synthetic
+  inputs) and pins at least one hand-computed result, because ONNX Runtime may
+  compute both sides with the same kernel (its ConvTranspose is GEMM plus
+  col2im, which is why the Col2Im difference is exactly 0).
+- **QDQ is TensorRT's form and nothing else.** Symmetric int8, zero point 0,
+  per-tensor activations, per-channel weights with `axis`, float biases with no
+  DequantizeLinear. Any change keeps `CheckTensorRT` and `QDQ` agreeing, and
+  `assertTensorRTForm` in the tests checks the export independently of both.
+  Asymmetric or uint8 output, a quantized bias or a QOperator node is refused
+  outright. The numeric test compares on calibration inputs (a held-out input
+  is clipped, which is calibration's business) and carries a control that
+  doubled scales fail the tolerance.
+- **The opset is raised only when safe.** `opsetChanges` in
+  `quantize/check.go` lists the operators whose meaning changed between 10 and
+  13; adding a raise path means adding the operators that change on it, from
+  the ONNX operator changelog, not from memory.
+- **The commands open models only through manifests.** Source digest checked
+  before decoding, derived model opened through a manifest with its own digest
+  for the CPU comparison, nothing written when a check fails, and the printed
+  manifest is what the file is shipped with. `quantization: qdq` in a manifest
+  makes `Open` run `CheckTensorRT`; an int8 manifest without it is unchecked,
+  as in v0.2.0.

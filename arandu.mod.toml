@@ -19,7 +19,10 @@ network = false
 # the verified copy of the model's calibration table, which is where TensorRT
 # reads it; TensorRT writes its engines and timing cache there. It writes
 # nothing anywhere else. The calibration command in cmd/ writes the table it
-# is told to, and is not linked into an application.
+# is told to, and is not linked into an application; nor are the rewrite and
+# quantize commands, which read a model through its manifest and write the new
+# model and its report where they are told to. The graph, rewrite and quantize
+# packages work on bytes and touch no file.
 filesystem = true
 # It runs no other program. It does link one: ONNX Runtime, loaded with dlopen
 # through cgo (github.com/yalue/onnxruntime_go). That is not exec and the

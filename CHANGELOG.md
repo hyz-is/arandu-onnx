@@ -10,6 +10,63 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
+Graph tools in Go: a lossless ONNX model editor, the Col2Im rewrite that lets
+TensorRT run MiVOLO whole, and the QDQ INT8 export TensorRT 11 requires. Every
+v0.2.0 configuration, manifest and call site keeps working unchanged.
+
+### Added
+
+- Package `graph`: `Load` and `Model.Marshal` decode an ONNX model into
+  `Model`, `Graph`, `Node`, `Attribute`, `Tensor` and `ValueInfo` values and
+  write it again, keeping every field they do not interpret as the bytes it
+  was read as; a model written in ascending field order, as exporters write
+  it, round-trips byte for byte (`mivolo_v2_age`, 117 MB, included).
+  `Graph.Initializer`, `Constant` (initializers and `Constant` nodes),
+  `Producer`, `Consumers`, `TypeOf`, `RemoveInitializer`, `Used`,
+  `CheckTopological`, `OpCounts`; `Namer`; `Model.Opset` and `SetOpset`;
+  tensor constructors and readers for float32, int64 and int8. Errors
+  `ErrMalformed` and `ErrUnreadable`. No new dependency: it is a hand-written
+  codec on the field numbers of onnx.proto.
+- Package `rewrite`: `Col2ImToConvTranspose` replaces every `Col2Im` with
+  `Reshape` and a grouped `ConvTranspose` with one-hot weights, the same
+  strides, pads and dilations, and `output_padding` for what no block
+  reaches. `Col2ImOptions.InputChannels` for a graph that does not record an
+  input's channels; `Col2ImReport`; `ErrUnsupported`, with the model left
+  unchanged.
+- Package `quantize`: `QDQ` exports a float model and a `calibration.Table`
+  as symmetric INT8 QDQ (activations per tensor, scale range/127; weights per
+  output channel into int8 initializers; int8 zero points of 0; biases in
+  float), in `ModeConv` (default) or `ModeConvMatMul`, with exclusions by node
+  name, prefix and operator, raising opset 10-12 to 13 only when no operator
+  changed meaning in between. `Report` with `ScalesSHA256`. `CheckTensorRT`
+  checks any model against TensorRT's QDQ rules. `ErrRefused`,
+  `ErrNotTensorRTQDQ`, `MinimumOpset`.
+- `Manifest.Quantization` (`quantization` in JSON, optional) and
+  `QuantizationQDQ` (`"qdq"`), valid with precision `int8`: `Open` refuses,
+  with `ErrContractMismatch`, a model so declared that `CheckTensorRT` does
+  not accept.
+- Command `cmd/arandu-onnx-rewrite`: rewrites Col2Im through the model's
+  manifest, verifies the result against the original on the CPU (`-verify`,
+  `-tolerance`), writes the model and a JSON report, prints its manifest.
+- Command `cmd/arandu-onnx-quantize`: exports QDQ from the manifest's pinned
+  table or `-table`, checks it with `CheckTensorRT`, compares it with the float
+  model on the CPU, writes the model and a JSON report, prints its manifest
+  (precision `int8`, quantization `qdq`).
+
+### Changed
+
+- `.gitignore` ignores `tmp/`, where local runs of the commands and the gate
+  logs go.
+
+### Requirements
+
+- Unchanged: Go 1.26, `CGO_ENABLED=1`, `github.com/yalue/onnxruntime_go`
+  v1.31.0, ONNX Runtime 1.26 or later. The new packages are pure Go; the
+  commands need ONNX Runtime only to verify (`-verify 0` skips it).
+- No new Go dependency.
+
 ## [0.2.0] - 2026-10-19
 
 TensorRT, real INT8 on NVIDIA tensor cores, calibration in Go, and the node

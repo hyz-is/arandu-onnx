@@ -4,6 +4,33 @@ Every release that changes what an installer has to write is described here,
 newest first. A release with nothing to change still has a heading, so this file
 and [CHANGELOG.md](CHANGELOG.md) describe the same set of versions.
 
+## v0.3.0
+
+Nothing has to change. Every addition is new: three packages (`graph`,
+`rewrite`, `quantize`), two commands, and one optional manifest key.
+
+To run a model with `Col2Im` (MiVOLO) entirely on TensorRT:
+
+1. `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.3.0
+   -manifest <manifest> -out <model>.convtranspose.onnx`, and check the
+   difference it prints.
+2. Ship the new file with the manifest the command printed. It has its own
+   SHA-256; a calibration table of the old file does not carry over, so
+   calibrate the new one again if it is to run in INT8.
+
+To move a model from a calibration table (implicit INT8, gone in TensorRT 11)
+to QDQ:
+
+1. `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-quantize@v0.3.0
+   -manifest <float manifest> -out <model>.qdq.onnx`, with the manifest's
+   `calibration` entry as the table and the exclusions the float table had.
+2. Ship the new file with the printed manifest: `"precision": "int8"` and
+   `"quantization": "qdq"`, no `calibration` entry. A manifest with the
+   `quantization` key needs v0.3.0: v0.2.0 refuses the unknown key.
+3. Measure it against FP16 on the card before switching, as with any INT8.
+
+An int8 manifest without `quantization` opens exactly as in v0.2.0, unchecked.
+
 ## v0.2.0
 
 Nothing has to change. A v0.1.0 configuration, manifest and call site builds
