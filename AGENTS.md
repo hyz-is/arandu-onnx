@@ -66,18 +66,29 @@ what the code calls.
 ## What this repository holds
 
 ```
-module.go    registration: Name, Routes (none), Boot, Health, Close, Runtime
-config.go    what the application passes in, and the default library path
-runtime.go   the library, the providers, Open and the contract check
-manifest.go  the provenance and contract of a model file
-session.go   Run, ModelInfo and Result
-tensor.go    the tensor exchanged with a model
-image.go     decode, resize, letterbox, crop, NCHW
-exif.go      the EXIF orientation of a JPEG
+module.go       registration: Name, Routes (none), Boot, Health, Close, Runtime
+config.go       what the application passes in: providers, CUDA, TensorRT, placement
+runtime.go      the library, the environment and the contract check
+providers.go    probing and appending providers, and the SessionPlan of their options
+open.go         Open and OpenOn: verification, the verified calibration table, fallback
+placement.go    the node placement report, its parser and the stderr capture
+stderr_*.go     the file descriptor primitives of the capture, per platform
+calibrate.go    Runtime.Calibrate: the float model run over samples for its INT8 table
+manifest.go     the provenance and contract of a model file, and of its table
+session.go      Run, ModelInfo, Placement and Result
+calibration/    the table, its two file formats, and the range collector (pure Go)
+internal/onnxgraph/  the protobuf reading and output rewriting calibration needs
+cmd/arandu-onnx-calibrate/  the calibration command (not linked into an application)
+tensor.go       the tensor exchanged with a model
+image.go        decode, resize, letterbox, crop, NCHW
+exif.go         the EXIF orientation of a JPEG
 ```
 
-Tests live under `tests/Unit` (manifests, tensors, images, the audit) and
-`tests/Feature` (the module, and every test that loads a model).
+Tests live under `tests/Unit` (manifests, tensors, images, provider plans,
+calibration tables and collectors, the placement parser, the audit) and
+`tests/Feature` (the module, the graph reader, calibration, the command, and
+every test that loads a model). The one test that needs TensorRT skips,
+naming why, on a machine without it: that skip is not a TensorRT pass.
 
 ## What does not exist here, on purpose
 
