@@ -1,0 +1,7 @@
+2026-10-19 13:15:08.903 exp[98848:2424115] 2026-10-19 13:15:08.903911 [V:onnxruntime:, graph_transformer_mgr.cc:67 ApplyTransformers] Stopping graph transformer iteration for level 4 after step 1 because the graph was not modified.
+2026-10-19 13:15:08.903 exp[98848:2424115] 2026-10-19 13:15:08.903944 [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MemcpyTransformer modified: 0 with status: OK
+2026-10-19 13:15:08.904 exp[98848:2424115] 2026-10-19 13:15:08.904064 [V:onnxruntime:, session_state.cc:1377 VerifyEachNodeIsAssignedToAnEp] Node placements
+2026-10-19 13:15:08.904 exp[98848:2424115] 2026-10-19 13:15:08.904092 [V:onnxruntime:, session_state.cc:1380 VerifyEachNodeIsAssignedToAnEp]  All nodes placed on [CPUExecutionProvider]. Number of nodes: 3
+2026-10-19 13:15:08.904 exp[98848:2424115] 2026-10-19 13:15:08.904122 [V:onnxruntime:, session_state.cc:186 CreateGraphInfo] SaveMLValueNameIndexMapping
+2026-10-19 13:15:08.904 exp[98848:2424115] 2026-10-19 13:15:08.904134 [V:onnxruntime:, session_state.cc:232 CreateGraphInfo] Done saving OrtValue mappings.
+2026-10-19 13:15:08.904 exp[98848:2424115] 2026-10-19 13:15:08.904145 [I:onnxruntime:, allocation_planner.cc:2653 CreateGraphPartitioner] Use DeviceBasedPartition as default

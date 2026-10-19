@@ -1,0 +1,17 @@
+2026-10-19 13:40:02.511901201 [I:onnxruntime:, inference_session.cc:2049 Initialize] Initializing session.
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1377 VerifyEachNodeIsAssignedToAnEp] Node placements
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1383 VerifyEachNodeIsAssignedToAnEp]  Node(s) placed on [TensorrtExecutionProvider]. Number of nodes: 2
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   TRTKernel_graph_torch-jit-export_6170385237591281234_0 (TensorrtExecutionProvider_TRTKernel_graph_torch-jit-export_6170385237591281234_0_0)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   TRTKernel_graph_torch-jit-export_6170385237591281234_1 (TensorrtExecutionProvider_TRTKernel_graph_torch-jit-export_6170385237591281234_1_1)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1383 VerifyEachNodeIsAssignedToAnEp]  Node(s) placed on [CUDAExecutionProvider]. Number of nodes: 3
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   NonMaxSuppression (/postprocess/NonMaxSuppression)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   TopK (/postprocess/TopK)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Sigmoid (/head/Sigmoid)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1383 VerifyEachNodeIsAssignedToAnEp]  Node(s) placed on [CPUExecutionProvider]. Number of nodes: 4
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Shape (/postprocess/Shape)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Gather (/postprocess/Gather)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Unsqueeze (/postprocess/Unsqueeze)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Concat (/postprocess/Concat)
+2026-10-19 13:40:02.512301990 [W:onnxruntime:, session_state.cc:1397 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.
+2026-10-19 13:40:02.512330112 [V:onnxruntime:, session_state.cc:186 CreateGraphInfo] SaveMLValueNameIndexMapping
+2026-10-19 13:40:02.512398876 [I:onnxruntime:, allocation_planner.cc:2653 CreateGraphPartitioner] Use DeviceBasedPartition as default

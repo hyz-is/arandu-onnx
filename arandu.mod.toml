@@ -12,8 +12,14 @@ profiles = ["conventional", "performance"]
 [permissions]
 # It answers no request and opens no connection. Nothing leaves the process.
 network = false
-# It reads model files from the directory the application names, and checks
-# that the shared library it was told to load exists. It writes nothing.
+# It reads model files and their calibration tables from the directory the
+# application names, and checks that the shared library it was told to load
+# exists. With TensorRT configured it also creates, under the cache directory
+# the application names, one private directory per model and writes into it
+# the verified copy of the model's calibration table, which is where TensorRT
+# reads it; TensorRT writes its engines and timing cache there. It writes
+# nothing anywhere else. The calibration command in cmd/ writes the table it
+# is told to, and is not linked into an application.
 filesystem = true
 # It runs no other program. It does link one: ONNX Runtime, loaded with dlopen
 # through cgo (github.com/yalue/onnxruntime_go). That is not exec and the

@@ -1,0 +1,2 @@
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1377 VerifyEachNodeIsAssignedToAnEp] Node placements
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1380 VerifyEachNodeIsAssignedToAnEp]  All nodes placed on [TensorrtExecutionProvider]. Number of nodes: 1

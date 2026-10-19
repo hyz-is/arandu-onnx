@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/hyz-is/arandu-onnx/calibration"
 )
 
 // Status is whether a model may be loaded.
@@ -116,6 +118,9 @@ type Manifest struct {
 	Outputs []TensorSpec `json:"outputs"`
 	// Precision is the numeric precision of the weights.
 	Precision Precision `json:"precision"`
+	// Calibration is the INT8 calibration table that lets TensorRT run this
+	// float model in INT8. Nil for a model without one.
+	Calibration *Calibration `json:"calibration,omitempty"`
 }
 
 // ErrInvalidManifest is wrapped by every error that reports a manifest which
@@ -205,6 +210,11 @@ func (m Manifest) Validate() error {
 	if err := validateSpecs("outputs", m.Outputs); err != nil {
 		return fail("%v", err)
 	}
+	if m.Calibration != nil {
+		if err := m.Calibration.validate(m); err != nil {
+			return fail("%v", err)
+		}
+	}
 	return nil
 }
 
@@ -243,4 +253,78 @@ func names(specs []TensorSpec) []string {
 		out[i] = spec.Name
 	}
 	return out
+}
+
+// CalibrationMethod is how a calibration table's ranges were chosen, as its
+// manifest records it.
+type CalibrationMethod string
+
+// The methods a Calibration may record.
+const (
+	// CalibrationMinMax is calibration.MethodMinMax.
+	CalibrationMinMax CalibrationMethod = "minmax"
+	// CalibrationPercentile is calibration.MethodPercentile.
+	CalibrationPercentile CalibrationMethod = "percentile"
+	// CalibrationEntropy is calibration.MethodEntropy.
+	CalibrationEntropy CalibrationMethod = "entropy"
+	// CalibrationExternal is a table produced by another tool, such as ONNX
+	// Runtime's own calibrator; the manifest's source records which.
+	CalibrationExternal CalibrationMethod = "external"
+)
+
+// Calibration is the INT8 calibration table that travels with a float model,
+// pinned like the model is.
+//
+// Open verifies its SHA-256 and parses it before TensorRT may read it, and
+// only a verified copy, written into the TensorRT cache directory, is what
+// TensorRT is pointed at.
+type Calibration struct {
+	// File is the table, relative to the directory passed to Open, like the
+	// model's own file.
+	File string `json:"file"`
+	// SHA256 is the lowercase hexadecimal SHA-256 of the table.
+	SHA256 string `json:"sha256"`
+	// Format is the table's encoding: calibration.FormatONNXRuntime or
+	// calibration.FormatTensorRT.
+	Format calibration.Format `json:"format"`
+	// Precision is the precision the table calibrates. It is int8, the only
+	// one TensorRT takes a table for.
+	Precision Precision `json:"precision"`
+	// Method is how the ranges were chosen.
+	Method CalibrationMethod `json:"method"`
+	// Source is what produced the table: the command, the tool and its
+	// version, and a description of the samples. Samples that are personal
+	// data are described, never named.
+	Source string `json:"source"`
+}
+
+// validate checks a calibration entry against the manifest that carries it.
+func (c *Calibration) validate(m Manifest) error {
+	if c.File == "" || !filepath.IsLocal(c.File) {
+		return fmt.Errorf("calibration.file %q has to be a relative path inside the model directory", c.File)
+	}
+	if filepath.Clean(c.File) == filepath.Clean(m.File) {
+		return fmt.Errorf("calibration.file %q is the model file itself", c.File)
+	}
+	if !digestPattern.MatchString(c.SHA256) {
+		return fmt.Errorf("calibration.sha256 %q has to be 64 lowercase hexadecimal characters", c.SHA256)
+	}
+	if !c.Format.Valid() {
+		return fmt.Errorf("calibration.format %q has to be %q or %q", c.Format, calibration.FormatONNXRuntime, calibration.FormatTensorRT)
+	}
+	if c.Precision != PrecisionINT8 {
+		return fmt.Errorf("calibration.precision %q has to be int8, the only precision TensorRT takes a table for", c.Precision)
+	}
+	switch c.Method {
+	case CalibrationMinMax, CalibrationPercentile, CalibrationEntropy, CalibrationExternal:
+	default:
+		return fmt.Errorf("calibration.method %q has to be minmax, percentile, entropy or external", c.Method)
+	}
+	if strings.TrimSpace(c.Source) == "" {
+		return fmt.Errorf("calibration.source is required: provenance is recorded, not assumed")
+	}
+	if m.Precision != PrecisionFP32 && m.Precision != PrecisionFP16 {
+		return fmt.Errorf("a calibration table quantizes a float model, and precision is %q: a model already in int8 carries its scales in the graph", m.Precision)
+	}
+	return nil
 }

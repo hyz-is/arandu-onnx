@@ -1,0 +1,10 @@
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1377 VerifyEachNodeIsAssignedToAnEp] Node placements
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1383 VerifyEachNodeIsAssignedToAnEp]  Node(s) placed on [CPUExecutionProvider]. Number of nodes: 4
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   QLinearConv (/model.0/conv/Conv_quant)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   QLinearConv (/model.1/conv/Conv_quant)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   NhwcMaxPool (/model.2/MaxPool_nhwc)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Shape (/Shape)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1383 VerifyEachNodeIsAssignedToAnEp]  Node(s) placed on [CUDAExecutionProvider]. Number of nodes: 2
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Sigmoid (/Sigmoid)
+2026-10-19 13:40:02.512077315 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Mul (/Mul)
+2026-10-19 13:40:02.512330112 [I:onnxruntime:, cuda_execution_provider.cc:121 CUDAExecutionProvider] Creating BFCArena for Cuda with following settings: initial_chunk_size_bytes: 1048576 max_dead_bytes_per_chunk: 134217728

@@ -31,6 +31,13 @@ type ModelInfo struct {
 	Provider string
 	// Status is the manifest's status when the session was opened.
 	Status Status
+	// Device is the GPU the session runs on when Provider is cuda or
+	// tensorrt, and 0 otherwise.
+	Device int
+	// Calibration is the SHA-256 of the INT8 calibration table TensorRT was
+	// handed when Provider is tensorrt, and empty when it was handed none.
+	// Which tensors TensorRT then ran in INT8 is its own decision.
+	Calibration string
 }
 
 // Result is what one inference returns.
@@ -56,7 +63,15 @@ type Session struct {
 
 	mu      sync.RWMutex
 	session *ort.DynamicAdvancedSession
+
+	placement Placement
 }
+
+// Placement returns where ONNX Runtime put the session's nodes, when
+// PlacementOptions.Capture is set. Sessions of one model on one device built
+// for the same providers share the report of the first, which was the one
+// built with the log captured. Placement.Captured is false otherwise.
+func (s *Session) Placement() Placement { return s.placement.clone() }
 
 // Model returns what identifies the session's model and runtime.
 func (s *Session) Model() ModelInfo { return s.info }

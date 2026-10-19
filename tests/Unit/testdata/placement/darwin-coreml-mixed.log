@@ -1,0 +1,11 @@
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189606 [V:onnxruntime:, graph_transformer_mgr.cc:67 ApplyTransformers] Stopping graph transformer iteration for level 4 after step 1 because the graph was not modified.
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189633 [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MemcpyTransformer modified: 0 with status: OK
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189660 [V:onnxruntime:, session_state.cc:1377 VerifyEachNodeIsAssignedToAnEp] Node placements
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189670 [V:onnxruntime:, session_state.cc:1383 VerifyEachNodeIsAssignedToAnEp]  Node(s) placed on [CoreMLExecutionProvider]. Number of nodes: 1
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189827 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   944020069742437158_CoreML_944020069742437158_0 (CoreMLExecutionProvider_944020069742437158_CoreML_944020069742437158_0_0)
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189842 [V:onnxruntime:, session_state.cc:1383 VerifyEachNodeIsAssignedToAnEp]  Node(s) placed on [CPUExecutionProvider]. Number of nodes: 1
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189854 [V:onnxruntime:, session_state.cc:1385 VerifyEachNodeIsAssignedToAnEp]   Cast (Cast_sf)
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189864 [W:onnxruntime:, session_state.cc:1397 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189932 [V:onnxruntime:, session_state.cc:186 CreateGraphInfo] SaveMLValueNameIndexMapping
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189952 [V:onnxruntime:, session_state.cc:232 CreateGraphInfo] Done saving OrtValue mappings.
+2026-10-19 13:36:24.189 exp[8833:2878476] 2026-10-19 13:36:24.189964 [I:onnxruntime:, allocation_planner.cc:2653 CreateGraphPartitioner] Use DeviceBasedPartition as default

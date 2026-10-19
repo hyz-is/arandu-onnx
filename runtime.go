@@ -1,12 +1,9 @@
 package onnx
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -133,6 +130,11 @@ type Runtime struct {
 
 	sessionsMu sync.Mutex
 	sessions   map[*Session]struct{}
+
+	// placements is the placement captured for each model on each device,
+	// by placementKey, so only the first session of each is built verbose.
+	placementsMu sync.Mutex
+	placements   map[string]Placement
 }
 
 // NewRuntime returns a runtime for the configuration, or the reason it cannot
@@ -141,15 +143,15 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Runtime{cfg: cfg.withDefaults(), sessions: map[*Session]struct{}{}}, nil
+	return &Runtime{
+		cfg:        cfg.withDefaults(),
+		sessions:   map[*Session]struct{}{},
+		placements: map[string]Placement{},
+	}, nil
 }
 
 // Config returns the configuration the runtime uses, with defaults filled in.
-func (r *Runtime) Config() Config {
-	cfg := r.cfg
-	cfg.Providers = append([]string(nil), r.cfg.Providers...)
-	return cfg
-}
+func (r *Runtime) Config() Config { return r.cfg.clone() }
 
 // Init loads the shared library, creates the environment and probes the
 // configured providers. A second call on a ready runtime does nothing; a call
@@ -242,171 +244,6 @@ func (r *Runtime) Providers() []ProviderStatus {
 	return append([]ProviderStatus(nil), r.providers...)
 }
 
-// probeProviders asks the loaded library to accept each provider on a
-// throwaway set of session options.
-func probeProviders(preferred []string) []ProviderStatus {
-	out := make([]ProviderStatus, 0, len(preferred)+1)
-	cpu := false
-	for _, name := range preferred {
-		if name == ProviderCPU {
-			cpu = true
-		}
-		status := ProviderStatus{Name: name, Available: true}
-		if err := probeProvider(name); err != nil {
-			status.Available = false
-			status.Reason = err.Error()
-		}
-		out = append(out, status)
-	}
-	if !cpu {
-		out = append(out, ProviderStatus{Name: ProviderCPU, Available: true})
-	}
-	return out
-}
-
-// probeProvider appends one provider to options nobody uses.
-func probeProvider(name string) error {
-	if name == ProviderCPU {
-		return nil
-	}
-	options, err := ort.NewSessionOptions()
-	if err != nil {
-		return err
-	}
-	defer options.Destroy()
-	return appendProvider(options, name)
-}
-
-// appendProvider registers one accelerator on a set of session options.
-func appendProvider(options *ort.SessionOptions, name string) error {
-	switch name {
-	case ProviderCoreML:
-		return options.AppendExecutionProviderCoreMLV2(map[string]string{})
-	case ProviderCUDA:
-		cuda, err := ort.NewCUDAProviderOptions()
-		if err != nil {
-			return err
-		}
-		defer cuda.Destroy()
-		return options.AppendExecutionProviderCUDA(cuda)
-	default:
-		return nil
-	}
-}
-
-// Open verifies a model file against its manifest and opens a session on it.
-//
-// The order is the point. A blocked manifest is refused before the file is
-// read. The file is read once, and its SHA-256 is compared with the manifest's
-// before ONNX Runtime sees a byte of it; the session is then built from those
-// same bytes, so what was verified is what runs. The graph's inputs and
-// outputs are compared with the manifest's before the session is returned.
-//
-// A model whose graph keeps its weights in external data files cannot be
-// opened this way, because a session built from memory does not read them.
-func (r *Runtime) Open(m Manifest, dir string) (*Session, error) {
-	if err := m.Validate(); err != nil {
-		return nil, err
-	}
-	if m.Status == StatusBlocked {
-		return nil, fmt.Errorf("%w: %s %s is blocked by its manifest", ErrModelBlocked, m.ID, m.Version)
-	}
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if err := r.usable(); err != nil {
-		return nil, err
-	}
-
-	path := filepath.Join(dir, m.File)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("onnx: reading model %s: %w", m.ID, err)
-	}
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != m.SHA256 {
-		return nil, fmt.Errorf("%w: %s at %s has sha256 %s and its manifest records %s",
-			ErrDigestMismatch, m.ID, path, got, m.SHA256)
-	}
-	if err := checkContract(m, data); err != nil {
-		return nil, err
-	}
-
-	dynamic, provider, err := r.createSession(m, data)
-	if err != nil {
-		return nil, err
-	}
-
-	s := &Session{
-		runtime:  r,
-		manifest: cloneManifest(m),
-		session:  dynamic,
-		info: ModelInfo{
-			ID:        m.ID,
-			Version:   m.Version,
-			SHA256:    m.SHA256,
-			Runtime:   "onnxruntime " + r.version,
-			Precision: m.Precision,
-			Provider:  provider,
-			Status:    m.Status,
-		},
-	}
-	r.sessionsMu.Lock()
-	r.sessions[s] = struct{}{}
-	r.sessionsMu.Unlock()
-	return s, nil
-}
-
-// createSession builds the session with the available accelerators, and
-// falls back to the CPU alone when the library refuses the graph with them.
-// It returns the provider the session was built for.
-func (r *Runtime) createSession(m Manifest, data []byte) (*ort.DynamicAdvancedSession, string, error) {
-	accelerators := []string{}
-	for _, status := range r.providers {
-		if status.Available && status.Name != ProviderCPU {
-			accelerators = append(accelerators, status.Name)
-		}
-	}
-
-	var firstErr error
-	if len(accelerators) > 0 {
-		session, err := r.newSession(m, data, accelerators)
-		if err == nil {
-			return session, accelerators[0], nil
-		}
-		firstErr = err
-	}
-	session, err := r.newSession(m, data, nil)
-	if err != nil {
-		if firstErr != nil {
-			err = errors.Join(firstErr, err)
-		}
-		return nil, "", fmt.Errorf("onnx: creating a session for %s: %w", m.ID, err)
-	}
-	return session, ProviderCPU, nil
-}
-
-// newSession builds one session with the given accelerators in front of the
-// CPU.
-func (r *Runtime) newSession(m Manifest, data []byte, accelerators []string) (*ort.DynamicAdvancedSession, error) {
-	options, err := ort.NewSessionOptions()
-	if err != nil {
-		return nil, err
-	}
-	defer options.Destroy()
-	if r.cfg.IntraOpThreads > 0 {
-		if err := options.SetIntraOpNumThreads(r.cfg.IntraOpThreads); err != nil {
-			return nil, err
-		}
-	}
-	for _, name := range accelerators {
-		if err := appendProvider(options, name); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	return ort.NewDynamicAdvancedSessionWithONNXData(data, names(m.Inputs), names(m.Outputs), options)
-}
-
 // checkContract compares the graph's inputs and outputs with the manifest's.
 //
 // Every input of the graph must be declared, because a session cannot run
@@ -486,5 +323,9 @@ func cloneManifest(m Manifest) Manifest {
 	}
 	m.Inputs = clone(m.Inputs)
 	m.Outputs = clone(m.Outputs)
+	if m.Calibration != nil {
+		c := *m.Calibration
+		m.Calibration = &c
+	}
 	return m
 }
