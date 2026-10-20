@@ -1,6 +1,9 @@
 // Package rewrite holds graph rewrites that keep a model's numbers and change
-// the operators it is written with, so that an execution provider which lacks
-// an operator can still run the whole graph.
+// the operators it is written with: so that an execution provider which
+// lacks an operator can still run the whole graph (Col2ImToConvTranspose),
+// so that an old export reaches the opset quantization needs (UpgradeOpset),
+// and so that an export's weights and inference-only operators are what the
+// graph says they are (InitializersOutOfInputs, DropoutToIdentity).
 //
 // Each rewrite works on a graph.Model in memory, is all or nothing (a model
 // with one node the rewrite cannot express is refused and left unchanged),
