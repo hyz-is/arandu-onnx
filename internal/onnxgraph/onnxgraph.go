@@ -76,8 +76,13 @@ type Graph struct {
 }
 
 // Activations returns the tensors whose values depend on the inputs: every
-// graph input that is not an initializer, and every node output, each once and
-// in the order the graph first names it.
+// graph input that is not an initializer, and every node output that is not
+// a constant, each once and in the order the graph first names it. The
+// constants are the initializers, the outputs of Constant nodes and the
+// outputs of a node that reads only constants: such a tensor has the same
+// value for every sample, so it has no range to calibrate, and its scalars
+// (an exponent, an epsilon) are values ONNX Runtime's Go binding cannot
+// return as outputs.
 func (g Graph) Activations() []string {
 	constant := make(map[string]bool, len(g.Initializers))
 	for _, name := range g.Initializers {
@@ -96,7 +101,25 @@ func (g Graph) Activations() []string {
 		add(name)
 	}
 	for _, node := range g.Nodes {
+		folded := node.OpType == "Constant"
+		if !folded {
+			reads := 0
+			folded = true
+			for _, name := range node.Inputs {
+				if name == "" {
+					continue
+				}
+				reads++
+				if !constant[name] {
+					folded = false
+				}
+			}
+			folded = folded && reads > 0
+		}
 		for _, name := range node.Outputs {
+			if folded && name != "" {
+				constant[name] = true
+			}
 			add(name)
 		}
 	}

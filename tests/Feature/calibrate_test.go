@@ -268,3 +268,45 @@ func sha(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+// scalarConstantModel is y = x^2 + 2*2, with the exponent and the term
+// computed from scalar Constant nodes, as some exporters write them.
+func scalarConstantModel() []byte {
+	scalar := func(name string, v float32) message {
+		return node("Constant", nil, []string{name}, message{}.text(1, "value").sub(5, floatInitializer(name+"_value", []float32{v})).integer(20, 4))
+	}
+	g := message{}.
+		sub(1, scalar("e", 2)).
+		sub(1, node("Pow", []string{"x", "e"}, []string{"p"})).
+		sub(1, node("Mul", []string{"e", "e"}, []string{"e2"})).
+		sub(1, node("Add", []string{"p", "e2"}, []string{"y"})).
+		text(2, "scalar-constants").
+		sub(11, valueInfo("x", protoFloat, -1, 2)).
+		sub(12, valueInfo("y", protoFloat, -1, 2))
+	return model(g)
+}
+
+func TestCalibrationLeavesOutWhatConstantsCompute(t *testing.T) {
+	g, err := onnxgraph.Read(scalarConstantModel())
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got := strings.Join(g.Activations(), ","); got != "x,p,y" {
+		t.Errorf("Activations = %s, want x,p,y: e is a Constant node and e2 is computed from constants only", got)
+	}
+
+	// The scalars are values ONNX Runtime's Go binding cannot return as
+	// outputs; calibrating them used to end the process.
+	rt := newRuntime(t, onnx.Config{})
+	manifest, dir := writeModel(t, syntheticManifest("scalars", "x", 2, "y", 2), scalarConstantModel())
+	result, err := rt.Calibrate(context.Background(), manifest, dir, onnx.Samples(
+		map[string]onnx.Tensor{"x": {Shape: []int64{1, 2}, Float32: []float32{1, -3}}},
+	), calibration.Options{})
+	if err != nil {
+		t.Fatalf("Calibrate: %v", err)
+	}
+	// |x| reaches 3, p = x^2 reaches 9 and y = p + 4 reaches 13.
+	if len(result.Table) != 3 || result.Table["x"] != 3 || result.Table["p"] != 9 || result.Table["y"] != 13 {
+		t.Errorf("table = %v, want x 3, p 9, y 13", result.Table)
+	}
+}

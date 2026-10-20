@@ -487,3 +487,31 @@ func assertFloats(t *testing.T, name string, got []float32, want ...float32) {
 		}
 	}
 }
+
+func TestAnOutputTheBindingCannotReturnIsAnErrorAndNotACrash(t *testing.T) {
+	rt := newRuntime(t, onnx.Config{})
+
+	// y = ReduceSum(x) with keepdims 0 is a scalar, which ONNX Runtime's Go
+	// binding cannot wrap as a Go tensor.
+	g := message{}.
+		sub(1, node("ReduceSum", []string{"x"}, []string{"y"}, intAttribute("keepdims", 0))).
+		text(2, "scalar-output").
+		sub(11, valueInfo("x", protoFloat, 2)).
+		sub(12, valueInfo("y", protoFloat))
+	manifest := syntheticManifest("scalar-output", "x", 1, "y", 0)
+	manifest.Inputs[0].Shape = []int64{2}
+	manifest.Outputs[0].Shape = []int64{}
+	manifest, dir := writeModel(t, manifest, model(g))
+	session, err := rt.Open(manifest, dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+	_, err = session.Run(context.Background(), map[string]onnx.Tensor{"x": {Shape: []int64{2}, Float32: []float32{1, 2}}})
+	if err == nil {
+		t.Skip("this binding returns scalar outputs; nothing is left for the guard to do")
+	}
+	if !strings.Contains(err.Error(), "run") {
+		t.Errorf("Run = %v", err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -139,9 +140,7 @@ func (s *Session) Run(ctx context.Context, inputs map[string]Tensor) (Result, er
 	outputs := make([]ort.Value, len(s.manifest.Outputs))
 	defer func() {
 		for _, value := range outputs {
-			if value != nil {
-				_ = value.Destroy()
-			}
+			destroyOutput(value)
 		}
 	}()
 
@@ -249,4 +248,18 @@ func fromValue(value ort.Value) (Tensor, error) {
 	default:
 		return Tensor{}, errUnsupportedOutput
 	}
+}
+
+// destroyOutput frees an output value the binding allocated. When the binding
+// fails to convert an output (a scalar or an empty tensor, which it cannot
+// wrap), it leaves a nil tensor inside a non-nil Value, and destroying that
+// would dereference nil.
+func destroyOutput(value ort.Value) {
+	if value == nil {
+		return
+	}
+	if v := reflect.ValueOf(value); v.Kind() == reflect.Pointer && v.IsNil() {
+		return
+	}
+	_ = value.Destroy()
 }
