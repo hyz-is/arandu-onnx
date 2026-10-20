@@ -10,10 +10,97 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-20
+
+Old exports into QDQ INT8, and QDQ exports that stay whole on TensorRT
+behind ONNX Runtime: an opset upgrade from 7 to 13; the rewrites that turn
+an IR 3 exporter's weights into constants and its Dropout into an Identity;
+and biases kept out of the reach of ONNX Runtime's bias quantization, which
+split v0.3.0 exports between TensorRT and the CPU. Configurations and call
+sites keep working unchanged; QDQ manifests written by v0.3.0 may now be
+refused at `Open` (see Changed).
+
+### Added
+
+- `rewrite.UpgradeOpset` with `OpsetOptions`, `OpsetReport`,
+  `OpsetConversion`, `OpsetUpgradeTarget` (13) and `OpsetUpgradeMinimum`
+  (7): raises the default-domain opset to 13 and rewrites, from the ONNX
+  operator changelog, every node whose operator changed in between
+  (BatchNormalization's `spatial`; Slice, TopK, Clip, Pad, Dropout, Squeeze,
+  Unsqueeze, ReduceSum and Split attributes to inputs; Resize-10 and
+  Upsample to Resize-13 with the opset 10 coordinates and rounding written
+  out; Softmax, LogSoftmax and Hardmax kept along their last axis or
+  rewritten as Flatten, the operator and Reshape, the old 2-D coercion).
+  Operators it does not enumerate, SAME padding that changed meaning at 11,
+  nearest resizes whose rounding cannot be written, opsets below 7, local
+  functions and subgraphs are refused with `ErrUnsupported`, the model
+  unchanged.
+- `rewrite.InitializersOutOfInputs` and `InitializersReport`: drops the
+  graph inputs an initializer of the same name backs, raising IR to 4 when
+  below, so the weights are constants. `rewrite.DropoutToIdentity` and
+  `DropoutReport`: replaces every Dropout with an Identity of its data,
+  refusing a training mode that is not the constant false or a mask that is
+  read.
+- `cmd/arandu-onnx-rewrite`: `-opset`, `-initializers-out-of-inputs`,
+  `-dropout-to-identity` and `-col2im` (default on), applied in that order
+  after the manifest's digest is checked; the report has `initializers`,
+  `dropout` and `opset` sections beside `rewrite`.
+- `Manifest.DerivedFrom` (`derived_from` in JSON, optional) and
+  `Derivation`: the id and digest of the file a rewrite or a quantization
+  was made from, and what was done. `arandu-onnx-rewrite` and
+  `arandu-onnx-quantize` print it in the manifest of the file they write.
+- `quantize.Report.DetachedBiases`: the biases QDQ moved out of the reach of
+  ONNX Runtime's bias quantization.
+
+### Changed
+
+- `quantize.QDQ` keeps every bias float32 on the runtime as well as in the
+  file. ONNX Runtime's `WeightBiasQuantization`, a level-1 graph transformer
+  every session runs before TensorRT is handed its nodes, rewrites the
+  one-dimensional bias of a quantized Conv, ConvTranspose or Gemm (or of a
+  MatMul its `MatMulAddFusion` joins to the Add after it) whose output goes
+  straight into a QuantizeLinear into an int32 DequantizeLinear, which
+  TensorRT does not run: each such layer went to the CPU and cut the
+  TensorRT graph in pieces. QDQ now writes a Conv or ConvTranspose bias as
+  an Add after the node and a Gemm or MatMul bias as `[1, N]`, which compute
+  the same and which the transformer does not take. The scales are
+  unchanged.
+- `quantize.CheckTensorRT` refuses, besides what it refused before, a
+  DequantizeLinear whose output reaches a bias through Reshape, Squeeze,
+  Unsqueeze, Flatten, Transpose, Cast, Expand or Identity (input 2 of a
+  Conv, ConvTranspose or Gemm, and the Add after a MatMul or Gemm), a
+  DequantizeLinear that reads neither an int8 constant nor a QuantizeLinear,
+  and a bias ONNX Runtime would quantize as above. A manifest declaring
+  `"quantization": "qdq"` whose file v0.3.0 exported with such a bias is
+  therefore refused at `Open`; export it again.
+- `quantize.QDQ` reads a weight from a `Constant` node as well as from an
+  initializer, and removes the node when nothing else reads it. A node whose
+  weight is an initializer listed as a graph input is skipped with a reason
+  naming `rewrite.InitializersOutOfInputs`, and the refusal of a model below
+  opset 13 names `rewrite.UpgradeOpset`.
+- `arandu-onnx-rewrite` no longer fails on a model without `Col2Im` when
+  another rewrite was asked for; it fails when none of the rewrites asked
+  for changed anything.
+- Calibration leaves out the tensors that do not depend on the inputs: the
+  outputs of `Constant` nodes and of nodes that read only constants. They
+  have no range to calibrate, and their scalars could not be returned.
+
+### Fixed
+
+- `Session.Run` no longer crashes the process when ONNX Runtime's Go binding
+  cannot return an output (a scalar or an empty tensor): the run returns the
+  binding's error. Calibrating a model whose scalar `Constant` values were
+  taken for activations ended in that crash.
+
+### Requirements
+
+- Unchanged: Go 1.26, `CGO_ENABLED=1`, `github.com/yalue/onnxruntime_go`
+  v1.31.0, ONNX Runtime 1.26 or later. No new Go dependency.
+
 ## [0.3.0] - 2026-10-19
 
 Graph tools in Go: a lossless ONNX model editor, the Col2Im rewrite that lets
-TensorRT run MiVOLO whole, and the QDQ INT8 export TensorRT 11 requires. Every
+TensorRT run a model with Col2Im whole, and the QDQ INT8 export TensorRT 11 requires. Every
 v0.2.0 configuration, manifest and call site keeps working unchanged.
 
 ### Added
@@ -22,7 +109,7 @@ v0.2.0 configuration, manifest and call site keeps working unchanged.
   `Model`, `Graph`, `Node`, `Attribute`, `Tensor` and `ValueInfo` values and
   write it again, keeping every field they do not interpret as the bytes it
   was read as; a model written in ascending field order, as exporters write
-  it, round-trips byte for byte (`mivolo_v2_age`, 117 MB, included).
+  it, round-trips byte for byte (a 117 MB export included).
   `Graph.Initializer`, `Constant` (initializers and `Constant` nodes),
   `Producer`, `Consumers`, `TypeOf`, `RemoveInitializer`, `Used`,
   `CheckTopological`, `OpCounts`; `Namer`; `Model.Opset` and `SetOpset`;

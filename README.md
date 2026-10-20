@@ -42,11 +42,15 @@ What it holds:
   resize, letterbox, crop, and NCHW normalisation. Pure Go.
 - **Graph tools, in Go** — `graph` loads, edits and writes ONNX models losslessly;
   `rewrite.Col2ImToConvTranspose` replaces `Col2Im`, which TensorRT lacks, with
-  an exact grouped `ConvTranspose`; `quantize.QDQ` exports symmetric INT8 QDQ
-  from a calibration table and `quantize.CheckTensorRT` checks any model
-  against TensorRT's QDQ rules. The `arandu-onnx-rewrite` and
-  `arandu-onnx-quantize` commands run them, verify the result on the CPU and
-  print the new file's manifest.
+  an exact grouped `ConvTranspose`; `rewrite.UpgradeOpset` raises an old export
+  (opset 7 and later) to opset 13, rewriting every operator that changed;
+  `rewrite.InitializersOutOfInputs` and `rewrite.DropoutToIdentity` make an
+  old exporter's weights constants and its Dropout an Identity;
+  `quantize.QDQ` exports symmetric INT8 QDQ from a calibration table and
+  `quantize.CheckTensorRT` checks any model against TensorRT's QDQ rules. The
+  `arandu-onnx-rewrite` and `arandu-onnx-quantize` commands run them, verify
+  the result on the CPU and print the new file's manifest, with the file it
+  was derived from.
 
 ## What it is not
 
@@ -98,7 +102,7 @@ are defaults, not requirements.
 ## Install
 
 ```bash
-go get github.com/hyz-is/arandu-onnx@v0.3.0
+go get github.com/hyz-is/arandu-onnx@v0.4.0
 ```
 
 ## Wire it
@@ -271,7 +275,7 @@ The two formats, both read by ONNX Runtime's TensorRT provider
 ### Producing a table, in Go
 
 ```bash
-go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-calibrate@v0.3.0 \
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-calibrate@v0.4.0 \
   -manifest models/det/manifest.json \
   -images /secure/calibration/det -size 640x640 -letterbox -mean 0,0,0 -std 1,1,1 \
   -method minmax -exclude-prefix /model/model.22/ -exclude boxes,scores \
@@ -326,23 +330,24 @@ provider asked for first got no node; a node other than the shape arithmetic in
 `DefaultCPUOps()` is on the CPU; or the placement could not be captured, since
 an unmeasured placement is not a clean one.
 
-## Graph tools: the Col2Im rewrite and the QDQ export
+## Graph tools: rewrites and the QDQ export
 
-Two things stand between some float models and a T4 running them entirely
-in TensorRT: an operator neither TensorRT nor the CUDA provider has, and
-INT8 that TensorRT 11 only takes as QDQ. Both are fixed by editing the
-graph, in Go, with three packages and two commands that are not linked
-into an application.
+Three things stand between some float models and a T4 running them entirely
+in TensorRT: an operator neither TensorRT nor the CUDA provider has, INT8
+that TensorRT 11 only takes as QDQ, and old exports that QDQ cannot be
+written into (an opset below 13, weights listed as graph inputs, Dropout).
+All are fixed by editing the graph, in Go, with three packages and two
+commands that are not linked into an application.
 
 | package | what it is |
 | --- | --- |
 | `graph` | `Load` and `Model.Marshal`: an ONNX model decoded into nodes, attributes, initializers and value info a rewrite can change. Every field it does not interpret (doc strings, metadata, functions, subgraphs, external-data references, quantization annotations) is kept as the bytes it read; a model loaded and marshalled unchanged is the same bytes again. Helpers find constants (initializers and `Constant` nodes), producers, consumers and recorded types, hand out fresh names, and check the topological order |
-| `rewrite` | `Col2ImToConvTranspose` |
+| `rewrite` | `Col2ImToConvTranspose`, `UpgradeOpset`, `InitializersOutOfInputs`, `DropoutToIdentity` |
 | `quantize` | `QDQ` and `CheckTensorRT` |
 
 ### Col2Im without Col2Im
 
-`Col2Im` (opset 18, MiVOLO's four `torch.nn.Fold`) has no kernel in
+`Col2Im` (opset 18, what exporters make of `torch.nn.Fold`) has no kernel in
 TensorRT or in ONNX Runtime's CUDA provider, so the graph is split between
 the card and the CPU. `rewrite.Col2ImToConvTranspose` replaces each node with
 an exact equivalent:
@@ -362,9 +367,9 @@ else is refused with `rewrite.ErrUnsupported` and the model is left as it
 was. The constants only `Col2Im` read are removed with it.
 
 ```bash
-go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.3.0 \
-  -manifest models/age/manifest.json -models models \
-  -out models/age/mivolo_v2_age.convtranspose.onnx
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.4.0 \
+  -manifest models/example/manifest.json -models models \
+  -out models/example/model.convtranspose.onnx
 ```
 
 The command reads the model through its manifest (digest checked), runs the
@@ -375,10 +380,65 @@ rewritten with every attribute, operator counts before and after, the
 measured difference) and prints the manifest of the new file. A calibration
 entry of the source is dropped: it pins the original file.
 
-On `mivolo_v2_age` (v2-8eb4cd8f5dd4), the four nodes are k 3, stride 2,
-pad 1 over 48×48 with 24×24 blocks and `output_padding` 1; 781 nodes become
-785, and the age output differs by 0 over 15 synthetic inputs on ONNX
-Runtime 1.30.0 CPU.
+### Old exports: opset 7 to 13
+
+QDQ needs opset 13 (per-channel `DequantizeLinear`), and some published
+exports are far older, opset 7 at IR 3. `rewrite.UpgradeOpset` raises the default-domain opset to 13 and
+rewrites each node whose operator changed signature or meaning in between,
+from the ONNX operator changelog:
+
+| operator (changed at) | what the upgrade writes |
+| --- | --- |
+| `BatchNormalization` (9) | `spatial` removed; `spatial = 0` refused |
+| `Slice` (10), `TopK` (10) | `starts`, `ends`, `axes` and `k` become int64 inputs |
+| `Clip` (11), `Pad` (11) | `min`, `max`, `pads` and `value` become inputs (float32 data only) |
+| `Resize`-10 (11), `Upsample` (deprecated) | `Resize`-13 with an empty `roi`, `coordinate_transformation_mode` `asymmetric` and, for `nearest`, `nearest_mode` `floor` (scales ≥ 1) or `ceil` (scales ≤ 1), which is what opset 10 computed; mixed or computed nearest scales are refused |
+| `Dropout` (12) | `ratio` becomes an input; a mask read below opset 10 is refused |
+| `Squeeze`, `Unsqueeze`, `ReduceSum`, `Split` (13) | `axes` and `split` become int64 inputs |
+| `Softmax`, `LogSoftmax`, `Hardmax` (13) | kept, axis written, when the axis is the last dimension; otherwise `Flatten` → operator along axis 1 → `Reshape` to the input's shape, the 2-D coercion of opset 1 and 11 exactly |
+
+Every other standard operator has to be on the list of those that compute
+the same at 13 (new types, negative axes, optional inputs, attributes whose
+default is the old behaviour); `Conv` and `LpPool` with `auto_pad` SAME and a
+stride above 1, and `ConvTranspose` with any SAME padding, are refused below
+11, where SAME meant something else. An operator on neither list, a model
+below opset 7, local functions or subgraphs are refused with
+`rewrite.ErrUnsupported`, the model unchanged. The IR version becomes 7.
+
+```bash
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.4.0 \
+  -manifest models/example/manifest.json -models models -opset 13 \
+  -shape 1,3,48,320 -tolerance 1e-5 -out models/example/model.opset13.onnx
+```
+
+Exports this old often hold their weights in `Constant` nodes rather than
+initializers; `quantize.QDQ` reads those as weights.
+
+### Weights listed as inputs, and Dropout
+
+Exporters written for IR 3 list every initializer as a graph input too, so
+the weights are inputs a caller could override and nothing treats them as
+constants: `quantize.QDQ` skips every node. `rewrite.InitializersOutOfInputs`
+drops the graph inputs an initializer of the same name backs (IR 4 allows
+it, and the IR is raised to 4 when below), and the weights become constants.
+`rewrite.DropoutToIdentity` replaces every `Dropout` with an `Identity` of
+its data, which is what it computes in inference, keeping the node's name
+and output; a training mode that is not the constant false, or a mask that
+something reads, is refused. Without the Dropout, a model at opset 10 to 12
+is one `quantize.QDQ` raises to 13 itself.
+
+```bash
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.4.0 \
+  -manifest models/example/manifest.json -models models \
+  -initializers-out-of-inputs -dropout-to-identity \
+  -out models/example/model.inference.onnx
+```
+
+The rewrite command runs, in this order, `-initializers-out-of-inputs`,
+`-dropout-to-identity`, `-opset 13` and the Col2Im rewrite (`-col2im`, on by
+default, nothing without a `Col2Im`), and fails when none changed anything.
+The manifest it prints names the source in `derived_from` (its id, its
+digest and what was done), as does the manifest of a QDQ export.
 
 ### QDQ INT8 from a calibration table
 
@@ -388,10 +448,10 @@ quantization in the form TensorRT 10 accepts and TensorRT 11 requires:
 | what | how |
 | --- | --- |
 | activations | `QuantizeLinear` → `DequantizeLinear` per tensor, scale = range / 127, int8 zero point 0; one pair per tensor, shared by the quantized nodes that read it, while float nodes keep the float tensor |
-| weights | quantized here into int8 initializers, per output channel (axis 0 for `Conv`, 1 for `ConvTranspose` and `MatMul`, by `transB` for `Gemm`), scale = max\|w\| / 127, rounded half to even into [-127, 127], read by a `DequantizeLinear` with its `axis` and int8 zero points 0. The float initializers nothing reads any more are removed |
-| biases | left float32, with nothing in front of them: TensorRT refuses a dequantized bias and fuses it itself |
+| weights | quantized here into int8 initializers, per output channel (axis 0 for `Conv`, 1 for `ConvTranspose` and `MatMul`, by `transB` for `Gemm`), scale = max\|w\| / 127, rounded half to even into [-127, 127], read by a `DequantizeLinear` with its `axis` and int8 zero points 0. A weight is a constant float tensor: an initializer that is not also a graph input, or the value of a `Constant` node. The float initializers and `Constant` nodes nothing reads any more are removed |
+| biases | left float32, with nothing in front of them: TensorRT refuses a dequantized bias and fuses it itself. ONNX Runtime's `WeightBiasQuantization` (graph optimization level 1, which every session gets before TensorRT is handed its nodes) rewrites the one-dimensional bias of a quantized `Conv`, `ConvTranspose` or `Gemm` — or of a `MatMul` it fuses with the `Add` after it — whose output goes straight into a `QuantizeLinear` into an int32 `DequantizeLinear` that TensorRT cannot run, splitting the TensorRT graph on the CPU. So such a bias is kept out of its reach: a `Conv` or `ConvTranspose` bias becomes an `Add` after the node, a `Gemm` or `MatMul` bias is reshaped to `[1, N]`, and `Report.DetachedBiases` lists them |
 | which nodes | `conv` (default): `Conv`, `ConvTranspose`. `conv-matmul`: also `MatMul` and `Gemm` with a constant 2-D weight. A product of two activations (attention) is never quantized. `ExcludeNodes`, `ExcludePrefixes` and `ExcludeOpTypes` keep heads, Softmax paths or LayerNorm neighbours in float, and a node whose input the table leaves out stays float |
-| opset | per-channel `DequantizeLinear` is opset 13. A model at 10 to 12 is raised when none of the operators whose meaning changed before 13 (Clip, Pad, Resize, Dropout, Softmax, LogSoftmax, Hardmax, Split, Squeeze, Unsqueeze, ReduceSum) is in it, and refused otherwise |
+| opset | per-channel `DequantizeLinear` is opset 13. A model at 10 to 12 is raised when none of the operators whose meaning changed before 13 (Clip, Pad, Resize, Dropout, Softmax, LogSoftmax, Hardmax, Split, Squeeze, Unsqueeze, ReduceSum) is in it, and refused otherwise, naming `rewrite.UpgradeOpset`, which raises any model from opset 7 |
 
 An already quantized model, a table of another model, weights in external
 data, or options that leave nothing to quantize are refused with
@@ -401,12 +461,14 @@ every node quantized and skipped (with the reason), every scale, and
 
 `quantize.CheckTensorRT` checks any model, this package's or a downloaded
 one, against the same rules: constant positive scales, int8 zero points of
-0, per-channel scales matching their axis, no `DequantizeLinear` on an int32
-tensor or a bias, no QOperator (`QLinearConv`) or dynamic (`MatMulInteger`)
-node.
+0, per-channel scales matching their axis, every `DequantizeLinear` reading
+an int8 constant or a `QuantizeLinear`, none reaching a bias (input 2 of a
+`Conv`, `ConvTranspose` or `Gemm`, or the `Add` after a `MatMul`, through
+reshapes and casts included), no bias ONNX Runtime would quantize as above,
+no QOperator (`QLinearConv`) or dynamic (`MatMulInteger`) node.
 
 ```bash
-go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-quantize@v0.3.0 \
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-quantize@v0.4.0 \
   -manifest models/det/manifest.json \
   -mode conv -exclude-prefix /model/model.22/ \
   -out models/det/model.qdq.onnx
@@ -494,6 +556,10 @@ A manifest:
 - `quantization` is optional: `qdq`, with precision `int8`, declares the
   explicit QDQ form TensorRT runs, and `Open` refuses a graph
   `quantize.CheckTensorRT` does not accept.
+- `derived_from` is optional: the source of a rewritten or quantized file,
+  `{"id": …, "sha256": …, "transform": …}`, as the commands print it, so a
+  shipped file can be followed back to the one its publisher released. `Open`
+  does not read it.
 
 Errors are sentinels, for `errors.Is`: `ErrLibraryUnavailable`,
 `ErrNotInitialized`, `ErrClosed`, `ErrModelBlocked`, `ErrDigestMismatch`,
@@ -558,7 +624,12 @@ verified tables into the TensorRT cache directory) and nothing else, and
   `Scan` bodies and local functions are kept as they were read, never
   rewritten or quantized. They read weights from the file, not from external
   data, and the QDQ export refuses a model whose weights are external.
-- The QDQ export and the Col2Im rewrite are verified on the ONNX Runtime CPU
+- The opset upgrade reads opset 7 and later and writes 13 only, and handles
+  the standard operators it enumerates; anything else is refused rather than
+  guessed. Its Softmax rank and Clip and Pad element types come from a small
+  inference over the graph, and where that cannot tell, the upgrade takes the
+  form that does not depend on it, or refuses.
+- The QDQ export and the rewrites are verified on the ONNX Runtime CPU
   provider only. The TensorRT rules `CheckTensorRT` applies are those of the
   TensorRT 10 documentation; that TensorRT builds an INT8 engine from an export,
   its speed and its accuracy against FP16 are measured on a GPU node, not here.
@@ -601,7 +672,11 @@ go test -race -count=1 ./...
 ```
 
 The tests write their own models as hand-encoded ONNX protobuf in Go; no model
-file is downloaded and none is committed. The tests that load a model need the
+file is downloaded and none is committed. Two checks also rewrite real exports
+the machine provides, named only by test variables
+(`ARANDU_ONNX_OPSET_UPGRADE_MODEL` and `_SAMPLES`,
+`ARANDU_ONNX_WEIGHT_INPUTS_MODEL` and `_SAMPLES`), and skip when they are not
+set. The tests that load a model need the
 ONNX Runtime library at `DefaultSharedLibraryPath()` and skip, saying why, when
 it is absent. CI installs ONNX Runtime 1.30.0 so that none of them skips there.
 The one test that needs TensorRT skips everywhere TensorRT is not installed, CI

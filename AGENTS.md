@@ -79,10 +79,11 @@ session.go      Run, ModelInfo, Placement and Result
 calibration/    the table, its two file formats, and the range collector (pure Go)
 internal/onnxgraph/  the protobuf reading and output rewriting calibration needs
 graph/          load, edit and write ONNX models, keeping what is not read (pure Go)
-rewrite/        Col2ImToConvTranspose: Col2Im as Reshape + grouped ConvTranspose
+rewrite/        Col2Im as Reshape + grouped ConvTranspose, the opset 7-to-13 upgrade,
+                weights out of the graph inputs, Dropout to Identity
 quantize/       QDQ (table to symmetric INT8 QDQ) and CheckTensorRT
 cmd/arandu-onnx-calibrate/  the calibration command (not linked into an application)
-cmd/arandu-onnx-rewrite/    the Col2Im rewrite, verified on the CPU (not linked)
+cmd/arandu-onnx-rewrite/    the rewrites, verified on the CPU (not linked)
 cmd/arandu-onnx-quantize/   the QDQ export, checked and compared on the CPU (not linked)
 tensor.go       the tensor exchanged with a model
 image.go        decode, resize, letterbox, crop, NCHW
@@ -92,9 +93,10 @@ exif.go         the EXIF orientation of a JPEG
 Tests live under `tests/Unit` (manifests, tensors, images, provider plans,
 calibration tables and collectors, the placement parser, the audit) and
 `tests/Feature` (the module, the graph reader and editor, calibration, the
-Col2Im rewrite, the QDQ export, the commands, and every test that loads a
-model). The one test that needs TensorRT skips,
-naming why, on a machine without it: that skip is not a TensorRT pass.
+rewrites, the QDQ export, the commands, the real-model checks that skip
+without the models, and every test that loads a model). The one test that
+needs TensorRT skips, naming why, on a machine without it: that skip is not a
+TensorRT pass.
 
 ## What does not exist here, on purpose
 

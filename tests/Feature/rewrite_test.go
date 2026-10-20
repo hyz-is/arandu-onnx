@@ -89,9 +89,9 @@ func (c col2imCase) input(seed uint64) onnx.Tensor {
 
 var col2imCases = []col2imCase{
 	{
-		// MiVOLO's shape, scaled down: k 3, stride 2, pads 1, and an image
+		// A Fold export's shape, scaled down: k 3, stride 2, pads 1, and an image
 		// whose last row and column no block reaches.
-		name: "mivolo-like", channels: 3, image: []int64{8, 8}, block: []int64{3, 3},
+		name: "fold-like", channels: 3, image: []int64{8, 8}, block: []int64{3, 3},
 		strides: []int64{2, 2}, pads: []int64{1, 1, 1, 1}, dilation: []int64{1, 1}, batch: 1,
 		// (8 + 2 - 2 - 1) / 2 = 3 rest 1.
 		blocks: []int64{4, 4}, outputPadding: []int64{1, 1},

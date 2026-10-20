@@ -4,12 +4,55 @@ Every release that changes what an installer has to write is described here,
 newest first. A release with nothing to change still has a heading, so this file
 and [CHANGELOG.md](CHANGELOG.md) describe the same set of versions.
 
+## v0.4.0
+
+Code and configuration need no change; QDQ exports made with v0.3.0 do:
+
+- **Re-export every QDQ model v0.3.0 wrote**, with the same table and
+  options. ONNX Runtime's `WeightBiasQuantization` rewrites the bias of a
+  quantized Conv, ConvTranspose, Gemm or fused MatMul whose output goes
+  straight into a QuantizeLinear into an int32 DequantizeLinear before
+  TensorRT is handed the graph; TensorRT cannot run it, so those nodes run
+  on the CPU and the TensorRT graph is split (placement shows
+  `DequantizeLinear` on the CPU, named `<node>_bias_dq`). v0.4.0 writes those
+  biases where the transformer does not take them, with the same scales
+  (`ScalesSHA256` is unchanged). `CheckTensorRT` now refuses the old form,
+  so a manifest declaring `"quantization": "qdq"` for such a file is refused
+  at `Open` with `ErrContractMismatch` instead of being split on a GPU node:
+  ship the new file and its new digest.
+
+Three behaviours move, all toward doing more with the same input:
+
+- `quantize.QDQ` keeps biases out of ONNX Runtime's bias quantization, as
+  above; `Report.DetachedBiases` lists the ones it moved.
+- `quantize.QDQ` now quantizes a node whose weight is a `Constant` node; in
+  v0.3.0 it skipped it. An export of such a model has more nodes in INT8
+  than before, and a new `ScalesSHA256`.
+- Calibration no longer lists the outputs of `Constant` nodes and of nodes
+  that read only constants. A table written by v0.3.0 keeps working; a new
+  one has fewer entries, and its digest changes.
+
+To export an old model (opset 7 to 12, weights listed as graph inputs, or a
+Dropout) to QDQ:
+
+1. `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.4.0
+   -manifest <manifest> -opset 13 -initializers-out-of-inputs
+   -dropout-to-identity -out <model>.inference.onnx` (the flags the model
+   needs), and check the difference it prints.
+2. Calibrate the new file (`arandu-onnx-calibrate`) or, when only the opset
+   or the inputs changed, reuse the old table with `-table`: the tensor names
+   are the same.
+3. `arandu-onnx-quantize -manifest <the printed manifest> ...` as in v0.3.0.
+
+A manifest with the `derived_from` key needs v0.4.0: v0.3.0 refuses the
+unknown key. Drop it to open the file with an older release.
+
 ## v0.3.0
 
 Nothing has to change. Every addition is new: three packages (`graph`,
 `rewrite`, `quantize`), two commands, and one optional manifest key.
 
-To run a model with `Col2Im` (MiVOLO) entirely on TensorRT:
+To run a model with `Col2Im` entirely on TensorRT:
 
 1. `go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@v0.3.0
    -manifest <manifest> -out <model>.convtranspose.onnx`, and check the
