@@ -89,8 +89,14 @@ type Report struct {
 	Activations []Activation `json:"activations"`
 	// Weights is every weight quantized, in name order.
 	Weights []Weight `json:"weights"`
-	// RemovedInitializers is the float weights nothing reads any more.
+	// RemovedInitializers is the float weights nothing reads any more:
+	// initializers, and the outputs of Constant nodes removed with them.
 	RemovedInitializers []string `json:"removed_initializers"`
+	// DetachedBiases is the biases moved out of the reach of ONNX Runtime's
+	// WeightBiasQuantization, which would make them int32 DequantizeLinear
+	// nodes TensorRT does not run: a Conv or ConvTranspose bias now added
+	// after the node, a Gemm or MatMul bias reshaped to [1, N].
+	DetachedBiases []string `json:"detached_biases"`
 	// ScalesSHA256 is a digest of every scale written: the SHA-256 of the
 	// sorted lines "a <tensor> <scale bits>" and "w <weight> <axis> <scale
 	// bits>...", the bits in hexadecimal. Two exports with the same digest
@@ -138,8 +144,9 @@ type Weight struct {
 // the explicit INT8 form TensorRT runs.
 //
 // For each node of the mode's operators that no exclusion names, whose
-// activation input the table gives a range, and whose weight is a float
-// initializer:
+// activation input the table gives a range, and whose weight is a constant
+// float tensor (an initializer that is not also a graph input, or the value
+// of a Constant node, as some exporters write their weights):
 //
 //   - the activation is read through QuantizeLinear and DequantizeLinear,
 //     per tensor, scale range / 127, int8 zero point 0; one pair per tensor,
@@ -284,6 +291,8 @@ func QDQ(m *graph.Model, table calibration.Table, opts Options) (Report, error) 
 	}
 	g.Nodes = nodes
 
+	report.DetachedBiases = detachBiases(g, namer)
+
 	if !g.HasSubgraphs() {
 		seen := map[string]bool{}
 		for _, p := range plans {
@@ -292,7 +301,17 @@ func QDQ(m *graph.Model, table calibration.Table, opts Options) (Report, error) 
 				continue
 			}
 			seen[name] = true
-			g.RemoveInitializer(name)
+			if g.Initializer(name) != nil {
+				g.RemoveInitializer(name)
+			} else if c := g.Producer(name); c != nil && c.OpType == "Constant" {
+				kept := g.Nodes[:0]
+				for _, n := range g.Nodes {
+					if n != c {
+						kept = append(kept, n)
+					}
+				}
+				g.Nodes = kept
+			}
 			report.RemovedInitializers = append(report.RemovedInitializers, name)
 		}
 		sort.Strings(report.RemovedInitializers)
@@ -363,8 +382,12 @@ func planNodes(g *graph.Graph, table calibration.Table, opts Options) ([]plan, [
 			skip(n, fmt.Sprintf("the table gives no range for its input %q (excluded from calibration, or not float32)", activation))
 			continue
 		}
-		weight := g.Initializer(n.Input(1))
-		if weight == nil || g.IsInput(weight.Name) {
+		weight := g.Constant(n.Input(1))
+		if weight == nil {
+			if g.Initializer(n.Input(1)) != nil && g.IsInput(n.Input(1)) {
+				skip(n, fmt.Sprintf("its weight %q is an initializer listed as a graph input, which a caller may override, so it is not a constant: rewrite.InitializersOutOfInputs (arandu-onnx-rewrite -initializers-out-of-inputs) makes it one", n.Input(1)))
+				continue
+			}
 			skip(n, fmt.Sprintf("its second input %q is not a constant weight (a product of two activations stays in float)", n.Input(1)))
 			continue
 		}

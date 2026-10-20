@@ -43,7 +43,7 @@ func opsetPlan(m *graph.Model) (int64, int64, error) {
 		return v, v, nil
 	}
 	if v < 10 {
-		return v, v, fmt.Errorf("%w: the model is at opset %d; QuantizeLinear needs 10 and per-channel DequantizeLinear %d, and raising a model from below 10 changes too many operators to do by number: export it again at opset %d or later", ErrRefused, v, MinimumOpset, MinimumOpset)
+		return v, v, fmt.Errorf("%w: the model is at opset %d; QuantizeLinear needs 10 and per-channel DequantizeLinear %d, and raising a model from below 10 changes too many operators to do by number: raise it with rewrite.UpgradeOpset (arandu-onnx-rewrite -opset 13), or export it again at opset %d or later", ErrRefused, v, MinimumOpset, MinimumOpset)
 	}
 	if m.HasFunctions() || m.Graph.HasSubgraphs() {
 		return v, v, fmt.Errorf("%w: the model is at opset %d and has local functions or subgraphs, which are not read to check that raising it to %d is safe: export it again at opset %d or later", ErrRefused, v, MinimumOpset, MinimumOpset)
@@ -64,7 +64,7 @@ func opsetPlan(m *graph.Model) (int64, int64, error) {
 	}
 	if len(blocking) > 0 {
 		sort.Strings(blocking)
-		return v, v, fmt.Errorf("%w: the model is at opset %d, per-channel DequantizeLinear needs %d, and %s changed meaning in between: export it again at opset %d or later", ErrRefused, v, MinimumOpset, strings.Join(blocking, ", "), MinimumOpset)
+		return v, v, fmt.Errorf("%w: the model is at opset %d, per-channel DequantizeLinear needs %d, and %s changed meaning in between: raise it with rewrite.UpgradeOpset (arandu-onnx-rewrite -opset 13; a Dropout can go first with -dropout-to-identity), or export it again at opset %d or later", ErrRefused, v, MinimumOpset, strings.Join(blocking, ", "), MinimumOpset)
 	}
 	return v, MinimumOpset, nil
 }
@@ -95,7 +95,6 @@ func CheckTensorRT(m *graph.Model) error {
 	var problems []string
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 
-	dequantized := map[string]*graph.Node{}
 	count := 0
 	perChannel := false
 	for _, n := range g.Nodes {
@@ -112,11 +111,12 @@ func CheckTensorRT(m *graph.Model) error {
 		}
 		if n.OpType == "DequantizeLinear" {
 			count++
-			for _, out := range n.Outputs {
-				dequantized[out] = n
-			}
 			if x := g.Constant(n.Input(0)); x != nil && x.DataType != graph.Int8 {
 				add("DequantizeLinear %q reads %q, which is %s: TensorRT dequantizes int8 only, and a bias stays float", n.Name, x.Name, x.DataType)
+			} else if x == nil {
+				if p := g.Producer(n.Input(0)); p == nil || p.OpType != "QuantizeLinear" || !p.IsStandard() {
+					add("DequantizeLinear %q reads %q, which is neither an int8 constant nor the output of a QuantizeLinear: TensorRT dequantizes int8 only", n.Name, n.Input(0))
+				}
 			}
 		}
 		scale := g.Constant(n.Input(1))
@@ -169,14 +169,16 @@ func CheckTensorRT(m *graph.Model) error {
 			}
 		}
 	}
-	for _, n := range g.Nodes {
-		i, ok := biasInputs[n.OpType]
-		if !ok || !n.IsStandard() {
+	for _, dq := range g.Nodes {
+		if dq.OpType != "DequantizeLinear" || !dq.IsStandard() {
 			continue
 		}
-		if dq, ok := dequantized[n.Input(i)]; ok {
-			add("DequantizeLinear %q feeds the bias of %s %q; TensorRT takes a float bias and quantizes it itself", dq.Name, n.OpType, n.Name)
+		for _, use := range biasUses(g, dq.Outputs) {
+			add("DequantizeLinear %q feeds the bias of %s; TensorRT takes a float bias and quantizes it itself", dq.Name, use)
 		}
+	}
+	for _, problem := range runtimeBiasQuantization(g) {
+		add("%s", problem)
 	}
 	if v, ok := m.Opset(graph.DefaultDomain); perChannel && (!ok || v < MinimumOpset) {
 		add("the model quantizes per channel at opset %d, and per-channel DequantizeLinear is opset %d", v, MinimumOpset)

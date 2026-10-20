@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 
@@ -250,11 +251,53 @@ func assertTensorRTForm(t *testing.T, g *graph.Graph) {
 			}
 		case "Conv", "Gemm":
 			bias := n.Input(2)
+			if bias == "" {
+				// The bias was moved after the node, out of the reach of ONNX
+				// Runtime's bias quantization: an Add of a float initializer.
+				var add *graph.Node
+				for _, c := range g.Nodes {
+					if c.OpType == "Add" && slices.Contains(c.Inputs, n.Outputs[0]) {
+						add = c
+					}
+				}
+				if add == nil {
+					t.Errorf("%s %s has no bias and no Add after it", n.OpType, n.Name)
+					break
+				}
+				bias = add.Inputs[1]
+				if bias == n.Outputs[0] {
+					bias = add.Inputs[0]
+				}
+			}
 			if p := produced[bias]; p != nil {
 				t.Errorf("the bias of %s comes from %s %s, want the float initializer", n.Name, p.OpType, p.Name)
 			}
 			if b := g.Initializer(bias); b == nil || b.DataType != graph.Float {
 				t.Errorf("the bias %q of %s is not a float initializer", bias, n.Name)
+			} else if len(b.Dims) == 1 && produced[n.Input(0)] != nil && produced[n.Input(0)].OpType == "DequantizeLinear" {
+				// A one-dimensional bias on a node whose output goes straight
+				// into a QuantizeLinear is what ONNX Runtime rewrites into an
+				// int32 DequantizeLinear.
+				out := n.Outputs[0]
+				for {
+					var next []*graph.Node
+					for _, c := range g.Nodes {
+						if slices.Contains(c.Inputs, out) {
+							next = append(next, c)
+						}
+					}
+					if len(next) != 1 {
+						break
+					}
+					if next[0].OpType == "QuantizeLinear" {
+						t.Errorf("%s %s keeps the bias %s and goes straight into a QuantizeLinear", n.OpType, n.Name, bias)
+						break
+					}
+					if next[0].OpType != "Relu" && next[0].OpType != "Clip" {
+						break
+					}
+					out = next[0].Outputs[0]
+				}
 			}
 			if p := produced[n.Input(1)]; p != nil && p.OpType == "DequantizeLinear" {
 				if w := g.Initializer(p.Input(0)); w == nil || w.DataType != graph.Int8 || p.Attribute("axis") == nil {
