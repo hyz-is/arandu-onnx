@@ -1,18 +1,29 @@
-// Command arandu-onnx-rewrite rewrites the Col2Im nodes of an ONNX model into
-// a Reshape and a grouped ConvTranspose, so that TensorRT and the CUDA
-// provider, which have no Col2Im kernel, run the whole graph.
+// Command arandu-onnx-rewrite rewrites an ONNX model so that it computes the
+// same with other operators: the Col2Im nodes into a Reshape and a grouped
+// ConvTranspose, so that TensorRT and the CUDA provider, which have no Col2Im
+// kernel, run the whole graph; an old export up to opset 13, which QDQ
+// quantization needs; the initializers an old exporter lists as graph inputs
+// into constants; and Dropout into Identity.
 //
-//	arandu-onnx-rewrite -manifest models/age/manifest.json \
-//	    -out models/age/mivolo_v2_age.convtranspose.onnx
+//	arandu-onnx-rewrite -manifest models/example/manifest.json \
+//	    -out models/example/model.convtranspose.onnx
+//	arandu-onnx-rewrite -manifest old/manifest.json -opset 13 -shape 1,3,48,320 \
+//	    -tolerance 1e-5 -out old/model.opset13.onnx
+//	arandu-onnx-rewrite -manifest ir3/manifest.json -initializers-out-of-inputs \
+//	    -dropout-to-identity -opset 13 -out ir3/model.inference.onnx
 //
 // The model is read through its manifest and its SHA-256 checked before a
-// byte of it is decoded. The rewrite (rewrite.Col2ImToConvTranspose) is all
-// or nothing. The rewritten model is then verified: the original and the
-// rewritten model run on the ONNX Runtime CPU provider over -verify
+// byte of it is decoded. The rewrites run in this order: initializers out of
+// the inputs (rewrite.InitializersOutOfInputs), Dropout to Identity
+// (rewrite.DropoutToIdentity), the opset upgrade (rewrite.UpgradeOpset), and
+// Col2Im (rewrite.Col2ImToConvTranspose, on by default, a no-op without
+// Col2Im). Each is all or nothing, and the command fails when none of them
+// changed anything. The rewritten model is then verified: the original and
+// the rewritten model run on the ONNX Runtime CPU provider over -verify
 // synthetic inputs, and the command fails, writing nothing, when an output
 // differs by more than -tolerance. Only then is the file written, the JSON
 // report beside it, and the manifest of the rewritten file printed, digest
-// included.
+// and derived_from included.
 //
 // Synthetic inputs prove the two graphs compute the same function, which is
 // what a rewrite has to keep; they say nothing about the model's accuracy,
@@ -29,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 
+	onnx "github.com/hyz-is/arandu-onnx"
 	"github.com/hyz-is/arandu-onnx/graph"
 	"github.com/hyz-is/arandu-onnx/rewrite"
 )
@@ -44,6 +56,9 @@ type options struct {
 	manifest, models, library string
 	out, report, id           string
 	channels, shape           string
+	col2im, initializers      bool
+	dropout                   bool
+	opset                     int64
 	verify                    int
 	seed                      uint64
 	low, high, tolerance      float64
@@ -57,7 +72,11 @@ func run(args []string) error {
 	fs.StringVar(&o.out, "out", "", "the rewritten model to write; required")
 	fs.StringVar(&o.report, "report", "", "the JSON report to write; default: -out with .report.json")
 	fs.StringVar(&o.id, "id", "", "the id of the printed manifest; default: the source manifest's")
+	fs.BoolVar(&o.col2im, "col2im", true, "rewrite every Col2Im node into Reshape and a grouped ConvTranspose (nothing happens without one)")
 	fs.StringVar(&o.channels, "channels", "", "comma-separated tensor=size: dimension 1 of a Col2Im input the graph does not record")
+	fs.Int64Var(&o.opset, "opset", 0, "raise the default-domain opset to this one, rewriting the operators that changed (13, the only target); 0 leaves it")
+	fs.BoolVar(&o.initializers, "initializers-out-of-inputs", false, "drop the graph inputs that have an initializer of the same name, so the weights are constants")
+	fs.BoolVar(&o.dropout, "dropout-to-identity", false, "replace every Dropout with an Identity, which is what it computes in inference")
 	fs.IntVar(&o.verify, "verify", 3, "run the original and the rewritten model on this many synthetic inputs and compare; 0 skips")
 	fs.Float64Var(&o.tolerance, "tolerance", 1e-4, "the largest absolute difference an output may show")
 	fs.StringVar(&o.shape, "shape", "", "comma-separated input shape for the synthetic inputs of a model with one input whose shape is dynamic")
@@ -88,12 +107,12 @@ func run(args []string) error {
 		return err
 	}
 	before := model.Graph.SortedOpCounts()
-	report, err := rewrite.Col2ImToConvTranspose(model, rewrite.Col2ImOptions{InputChannels: channels})
+	done, steps, err := applyRewrites(model, o, channels)
 	if err != nil {
 		return err
 	}
-	if len(report.Rewritten) == 0 {
-		return fmt.Errorf("%s has no Col2Im node: nothing to rewrite", source.ID)
+	if len(steps) == 0 {
+		return fmt.Errorf("%s: none of the rewrites asked for changed anything (it has no Col2Im node; see -opset, -initializers-out-of-inputs and -dropout-to-identity)", source.ID)
 	}
 	out, err := model.Marshal()
 	if err != nil {
@@ -106,6 +125,10 @@ func run(args []string) error {
 		derived.ID = o.id
 	}
 	derived.SHA256 = sha256Hex(out)
+	derived.DerivedFrom = &onnx.Derivation{
+		ID: source.ID, SHA256: source.SHA256,
+		Transform: "arandu-onnx-rewrite: " + strings.Join(steps, "; "),
+	}
 
 	tmp := o.out + ".tmp"
 	if err := os.WriteFile(tmp, out, 0o644); err != nil {
@@ -139,15 +162,21 @@ func run(args []string) error {
 	}
 
 	full := struct {
-		Source       sourceReport         `json:"source"`
-		Rewrite      rewrite.Col2ImReport `json:"rewrite"`
-		OpsBefore    []string             `json:"ops_before"`
-		OpsAfter     []string             `json:"ops_after"`
-		Verification *verificationReport  `json:"verification,omitempty"`
-		Output       sourceReport         `json:"output"`
+		Source       sourceReport                `json:"source"`
+		Initializers *rewrite.InitializersReport `json:"initializers,omitempty"`
+		Dropout      *rewrite.DropoutReport      `json:"dropout,omitempty"`
+		Opset        *rewrite.OpsetReport        `json:"opset,omitempty"`
+		Rewrite      *rewrite.Col2ImReport       `json:"rewrite,omitempty"`
+		OpsBefore    []string                    `json:"ops_before"`
+		OpsAfter     []string                    `json:"ops_after"`
+		Verification *verificationReport         `json:"verification,omitempty"`
+		Output       sourceReport                `json:"output"`
 	}{
 		Source:       sourceReport{ID: source.ID, File: source.File, SHA256: source.SHA256},
-		Rewrite:      report,
+		Initializers: done.initializers,
+		Dropout:      done.dropout,
+		Opset:        done.opset,
+		Rewrite:      done.col2im,
 		OpsBefore:    before,
 		OpsAfter:     model.Graph.SortedOpCounts(),
 		Verification: verification,
@@ -156,8 +185,9 @@ func run(args []string) error {
 	if err := writeJSON(o.report, full); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "%d Col2Im nodes rewritten; %d nodes before, %d after\n",
-		len(report.Rewritten), report.NodesBefore, report.NodesAfter)
+	for _, step := range steps {
+		fmt.Fprintln(os.Stderr, step)
+	}
 	if source.Calibration != nil {
 		fmt.Fprintln(os.Stderr, "the source manifest's calibration table is left out: it pins the original file; calibrate the rewritten model again")
 	}
@@ -167,6 +197,65 @@ func run(args []string) error {
 	}
 	fmt.Println(string(encoded))
 	return nil
+}
+
+// applied is the report of each rewrite that changed the model.
+type applied struct {
+	initializers *rewrite.InitializersReport
+	dropout      *rewrite.DropoutReport
+	opset        *rewrite.OpsetReport
+	col2im       *rewrite.Col2ImReport
+}
+
+// applyRewrites runs the rewrites asked for, in order, and returns what each
+// one that changed something did, and a line per change.
+func applyRewrites(model *graph.Model, o options, channels map[string]int64) (applied, []string, error) {
+	var a applied
+	var steps []string
+	if o.initializers {
+		r, err := rewrite.InitializersOutOfInputs(model)
+		if err != nil {
+			return a, nil, err
+		}
+		if len(r.Removed) > 0 {
+			a.initializers = &r
+			steps = append(steps, fmt.Sprintf("%d initializers taken out of the graph inputs (inputs %d to %d, IR %d to %d)",
+				len(r.Removed), r.InputsBefore, r.InputsAfter, r.IRBefore, r.IRAfter))
+		}
+	}
+	if o.dropout {
+		r, err := rewrite.DropoutToIdentity(model)
+		if err != nil {
+			return a, nil, err
+		}
+		if len(r.Replaced) > 0 {
+			a.dropout = &r
+			steps = append(steps, fmt.Sprintf("%d Dropout nodes replaced with Identity", len(r.Replaced)))
+		}
+	}
+	if o.opset != 0 {
+		r, err := rewrite.UpgradeOpset(model, rewrite.OpsetOptions{Target: o.opset})
+		if err != nil {
+			return a, nil, err
+		}
+		if r.OpsetAfter != r.OpsetBefore {
+			a.opset = &r
+			steps = append(steps, fmt.Sprintf("opset %d to %d, %d nodes converted (IR %d to %d)",
+				r.OpsetBefore, r.OpsetAfter, len(r.Converted), r.IRBefore, r.IRAfter))
+		}
+	}
+	if o.col2im {
+		r, err := rewrite.Col2ImToConvTranspose(model, rewrite.Col2ImOptions{InputChannels: channels})
+		if err != nil {
+			return a, nil, err
+		}
+		if len(r.Rewritten) > 0 {
+			a.col2im = &r
+			steps = append(steps, fmt.Sprintf("%d Col2Im nodes rewritten; %d nodes before, %d after",
+				len(r.Rewritten), r.NodesBefore, r.NodesAfter))
+		}
+	}
+	return a, steps, nil
 }
 
 // verifyOptions is the subset the shared verification reads.

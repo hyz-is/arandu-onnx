@@ -130,6 +130,11 @@ func run(args []string) error {
 		derived.ID = o.id
 	}
 	derived.SHA256 = sha256Hex(out)
+	derived.DerivedFrom = &onnx.Derivation{
+		ID: source.ID, SHA256: source.SHA256,
+		Transform: fmt.Sprintf("arandu-onnx-quantize: QDQ int8, mode %s, table sha256 %s, scales sha256 %s, %d nodes quantized, %d left in float",
+			report.Mode, tableReport.SHA256, report.ScalesSHA256, len(report.Quantized), len(report.Skipped)),
+	}
 
 	tmp := o.out + ".tmp"
 	if err := os.WriteFile(tmp, out, 0o644); err != nil {
