@@ -125,6 +125,9 @@ type Manifest struct {
 	// Calibration is the INT8 calibration table that lets TensorRT run this
 	// float model in INT8. Nil for a model without one.
 	Calibration *Calibration `json:"calibration,omitempty"`
+	// DerivedFrom is the file this model was produced from by a rewrite or a
+	// quantization, and how. Nil for a file as its source published it.
+	DerivedFrom *Derivation `json:"derived_from,omitempty"`
 }
 
 // Quantization is the form of an int8 model's quantization.
@@ -240,6 +243,11 @@ func (m Manifest) Validate() error {
 			return fail("%v", err)
 		}
 	}
+	if m.DerivedFrom != nil {
+		if err := m.DerivedFrom.validate(m); err != nil {
+			return fail("%v", err)
+		}
+	}
 	return nil
 }
 
@@ -350,6 +358,40 @@ func (c *Calibration) validate(m Manifest) error {
 	}
 	if m.Precision != PrecisionFP32 && m.Precision != PrecisionFP16 {
 		return fmt.Errorf("a calibration table quantizes a float model, and precision is %q: a model already in int8 carries its scales in the graph", m.Precision)
+	}
+	return nil
+}
+
+// Derivation is the provenance of a model file produced from another one: a
+// rewrite or a quantization of it, as arandu-onnx-rewrite and
+// arandu-onnx-quantize print it.
+//
+// It names the source by its manifest's id and the digest of its file, so the
+// chain from a shipped file back to the file its publisher released can be
+// followed manifest by manifest. Open does not read it.
+type Derivation struct {
+	// ID is the id of the source file's manifest.
+	ID string `json:"id"`
+	// SHA256 is the lowercase hexadecimal SHA-256 of the source file.
+	SHA256 string `json:"sha256"`
+	// Transform is what produced this file from the source: the command and
+	// what it did, such as "arandu-onnx-rewrite: opset 7 to 13".
+	Transform string `json:"transform"`
+}
+
+// validate checks a derivation against the manifest that carries it.
+func (d *Derivation) validate(m Manifest) error {
+	if !idPattern.MatchString(d.ID) {
+		return fmt.Errorf("derived_from.id %q has to be a manifest id", d.ID)
+	}
+	if !digestPattern.MatchString(d.SHA256) {
+		return fmt.Errorf("derived_from.sha256 %q has to be 64 lowercase hexadecimal characters", d.SHA256)
+	}
+	if d.SHA256 == m.SHA256 {
+		return fmt.Errorf("derived_from.sha256 is the file's own digest: a file is not derived from itself")
+	}
+	if strings.TrimSpace(d.Transform) == "" {
+		return fmt.Errorf("derived_from.transform is required: provenance is recorded, not assumed")
 	}
 	return nil
 }
