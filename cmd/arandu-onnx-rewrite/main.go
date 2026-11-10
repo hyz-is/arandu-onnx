@@ -25,6 +25,11 @@
 // report beside it, and the manifest of the rewritten file printed, digest
 // and derived_from included.
 //
+// With -average-pool-to-depthwise-conv every unpadded AveragePool becomes a
+// depthwise Conv with the constant weight 1/(kernel size): the same average,
+// for an accelerator where a quantized pooling is much slower than a
+// convolution (rewrite.AveragePoolToDepthwiseConv, run after Col2Im).
+//
 // Synthetic inputs prove the two graphs compute the same function, which is
 // what a rewrite has to keep; they say nothing about the model's accuracy,
 // which the rewrite does not change.
@@ -58,6 +63,7 @@ type options struct {
 	channels, shape           string
 	col2im, initializers      bool
 	dropout                   bool
+	avgpool                   bool
 	opset                     int64
 	verify                    int
 	seed                      uint64
@@ -77,6 +83,7 @@ func run(args []string) error {
 	fs.Int64Var(&o.opset, "opset", 0, "raise the default-domain opset to this one, rewriting the operators that changed (13, the only target); 0 leaves it")
 	fs.BoolVar(&o.initializers, "initializers-out-of-inputs", false, "drop the graph inputs that have an initializer of the same name, so the weights are constants")
 	fs.BoolVar(&o.dropout, "dropout-to-identity", false, "replace every Dropout with an Identity, which is what it computes in inference")
+	fs.BoolVar(&o.avgpool, "average-pool-to-depthwise-conv", false, "replace every unpadded AveragePool with a depthwise Conv of weight 1/(kernel size), the same average on a runtime where a quantized pool is slow")
 	fs.IntVar(&o.verify, "verify", 3, "run the original and the rewritten model on this many synthetic inputs and compare; 0 skips")
 	fs.Float64Var(&o.tolerance, "tolerance", 1e-4, "the largest absolute difference an output may show")
 	fs.StringVar(&o.shape, "shape", "", "comma-separated input shape for the synthetic inputs of a model with one input whose shape is dynamic")
@@ -112,7 +119,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(steps) == 0 {
-		return fmt.Errorf("%s: none of the rewrites asked for changed anything (it has no Col2Im node; see -opset, -initializers-out-of-inputs and -dropout-to-identity)", source.ID)
+		return fmt.Errorf("%s: none of the rewrites asked for changed anything (it has no Col2Im node; see -opset, -initializers-out-of-inputs, -dropout-to-identity and -average-pool-to-depthwise-conv)", source.ID)
 	}
 	out, err := model.Marshal()
 	if err != nil {
@@ -167,6 +174,7 @@ func run(args []string) error {
 		Dropout      *rewrite.DropoutReport      `json:"dropout,omitempty"`
 		Opset        *rewrite.OpsetReport        `json:"opset,omitempty"`
 		Rewrite      *rewrite.Col2ImReport       `json:"rewrite,omitempty"`
+		AveragePool  *rewrite.AveragePoolReport  `json:"average_pool,omitempty"`
 		OpsBefore    []string                    `json:"ops_before"`
 		OpsAfter     []string                    `json:"ops_after"`
 		Verification *verificationReport         `json:"verification,omitempty"`
@@ -177,6 +185,7 @@ func run(args []string) error {
 		Dropout:      done.dropout,
 		Opset:        done.opset,
 		Rewrite:      done.col2im,
+		AveragePool:  done.avgpool,
 		OpsBefore:    before,
 		OpsAfter:     model.Graph.SortedOpCounts(),
 		Verification: verification,
@@ -205,6 +214,7 @@ type applied struct {
 	dropout      *rewrite.DropoutReport
 	opset        *rewrite.OpsetReport
 	col2im       *rewrite.Col2ImReport
+	avgpool      *rewrite.AveragePoolReport
 }
 
 // applyRewrites runs the rewrites asked for, in order, and returns what each
@@ -253,6 +263,16 @@ func applyRewrites(model *graph.Model, o options, channels map[string]int64) (ap
 			a.col2im = &r
 			steps = append(steps, fmt.Sprintf("%d Col2Im nodes rewritten; %d nodes before, %d after",
 				len(r.Rewritten), r.NodesBefore, r.NodesAfter))
+		}
+	}
+	if o.avgpool {
+		r, err := rewrite.AveragePoolToDepthwiseConv(model, rewrite.AveragePoolOptions{InputChannels: channels})
+		if err != nil {
+			return a, nil, err
+		}
+		if len(r.Rewritten) > 0 {
+			a.avgpool = &r
+			steps = append(steps, fmt.Sprintf("%d AveragePool nodes rewritten into depthwise Conv", len(r.Rewritten)))
 		}
 	}
 	return a, steps, nil
