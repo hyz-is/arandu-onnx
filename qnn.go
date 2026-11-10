@@ -16,8 +16,11 @@ import (
 const LogProviderQNN = "QNNExecutionProvider"
 
 // DefaultQNNRegistrationName is the name the plugin library is registered
-// under when QNNOptions.RegistrationName is empty.
-const DefaultQNNRegistrationName = "qnn"
+// under when QNNOptions.RegistrationName is empty. It is the provider's own
+// name: the Qualcomm plugin lists its NPU device only when it is registered
+// under it, and under any other name the device list has no QNN entry
+// (measured on a QCS6490 with onnxruntime-qnn 2.7.0 and ONNX Runtime 1.27.1).
+const DefaultQNNRegistrationName = LogProviderQNN
 
 // QNNOptions is the ProviderQNN configuration: the Qualcomm AI Engine Direct
 // execution provider, loaded as a plugin library and run on the Hexagon NPU.
