@@ -37,6 +37,20 @@ a release is corrected by another release and never by moving a tag.
 
 Nothing existing changes: `qnn` is read only when `Providers` names it, and
 the CPU, CUDA, TensorRT and CoreML paths are as they were.
+- `quantize.QNN` with `QNNOptions`, `QNNReport`, `QNNType`, `Range`, `QParams`
+  and `MinimumRealRange`: the QDQ form the Qualcomm QNN execution provider
+  runs on a Hexagon NPU (asymmetric `uint8` or `uint16` activations,
+  per-channel `uint8` weights with zero point 128, `int32` biases, the fixed
+  output scales of Sigmoid, Softmax and Tanh, data movers quantized as their
+  input, an optional integer graph input), from a minimum and a maximum per
+  tensor. It is a separate function: `QDQ`, `CheckTensorRT` and their
+  behaviour are unchanged, and `CheckTensorRT` refuses a QNN export.
+- `arandu-onnx-quantize -qnn options.json`: the command writes the QNN form;
+  without the flag it behaves as before.
+- `rewrite.AveragePoolToDepthwiseConv` with `AveragePoolOptions` and
+  `AveragePoolReport`, and `arandu-onnx-rewrite -average-pool-to-depthwise-conv`
+  (off by default, run after the Col2Im rewrite): an unpadded `AveragePool` as a
+  depthwise `Conv` of weight `1 / window size`.
 
 ## [0.4.0] - 2026-10-20
 

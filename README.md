@@ -434,8 +434,8 @@ commands that are not linked into an application.
 | package | what it is |
 | --- | --- |
 | `graph` | `Load` and `Model.Marshal`: an ONNX model decoded into nodes, attributes, initializers and value info a rewrite can change. Every field it does not interpret (doc strings, metadata, functions, subgraphs, external-data references, quantization annotations) is kept as the bytes it read; a model loaded and marshalled unchanged is the same bytes again. Helpers find constants (initializers and `Constant` nodes), producers, consumers and recorded types, hand out fresh names, and check the topological order |
-| `rewrite` | `Col2ImToConvTranspose`, `UpgradeOpset`, `InitializersOutOfInputs`, `DropoutToIdentity` |
-| `quantize` | `QDQ` and `CheckTensorRT` |
+| `rewrite` | `Col2ImToConvTranspose`, `UpgradeOpset`, `InitializersOutOfInputs`, `DropoutToIdentity`, `AveragePoolToDepthwiseConv` |
+| `quantize` | `QDQ` and `CheckTensorRT`; `QNN`, the asymmetric form a Qualcomm NPU runs |
 
 ### Col2Im without Col2Im
 
@@ -531,6 +531,70 @@ The rewrite command runs, in this order, `-initializers-out-of-inputs`,
 default, nothing without a `Col2Im`), and fails when none changed anything.
 The manifest it prints names the source in `derived_from` (its id, its
 digest and what was done), as does the manifest of a QDQ export.
+
+### AveragePool as a depthwise Conv
+
+An average over a window with no padding is a convolution of each channel with
+a constant kernel of `1 / (window size)`. `rewrite.AveragePoolToDepthwiseConv`
+replaces every such `AveragePool` (float32, every pad 0, `ceil_mode` 0,
+dilations 1) with a `Conv` whose `group` is the channel count, keeping the
+node's input and output names; the numbers agree to rounding. It is for a
+runtime where a quantized pooling costs far more than a convolution of the
+same size: on one Qualcomm NPU generation a 2 x 2, stride 1 pool measured at
+hundreds of times the depthwise convolution, and five of them took almost all
+of a detector's time. Elsewhere the two cost the same. An `AveragePool` the
+identity does not cover is refused (`ErrUnsupported`), and the channels come
+from the graph's value info or from `AveragePoolOptions.InputChannels`.
+
+```bash
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-rewrite@latest \
+  -manifest models/example/manifest.json -average-pool-to-depthwise-conv \
+  -out models/example/model.dwconv.onnx
+```
+
+The flag is off by default; the command runs it after the Col2Im rewrite.
+
+### QDQ for a Qualcomm NPU (QNN)
+
+`quantize.QDQ` writes the symmetric int8 form TensorRT runs. The QNN execution
+provider on a Qualcomm Hexagon NPU wants another one, and `quantize.QNN` writes
+it, behind its own function and its own command flag; `QDQ`, `CheckTensorRT` and
+the commands' defaults are untouched, and `CheckTensorRT` refuses a QNN export
+(`ErrNotTensorRTQDQ`), as it should.
+
+| what | how |
+| --- | --- |
+| activations | `QuantizeLinear` then `DequantizeLinear` per tensor, unsigned (`uint8` by default, `uint16` with `Activations`), asymmetric: the range is widened to include 0 and to `MinimumRealRange` (0.0001), scale `(max - min) / (qmax - qmin)` and zero point `round(-min / scale)`, clamped. A graph output keeps its name and stays float |
+| fixed outputs | `Sigmoid` and `Softmax` outputs get scale 1/256 (1/65536) and zero point 0, `Tanh` 1/128 and 128 (1/32768 and 32768): the HTP requires them |
+| data movers | the output of `Slice`, `Split`, `Resize`, `MaxPool`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze` and `Flatten` is quantized as its input; the integers pass through |
+| weights | `Conv` (axis 0) and `ConvTranspose` (axis 1): `uint8` per output channel, zero point 128, scale `2 max|w| / 255`, or `QNNOptions.WeightScales` for one scale per weight (a power of two makes a mean's 0.25 exact) |
+| biases | `int32` per channel, scale `input scale * weight scale`, zero point 0, read by a `DequantizeLinear` with axis 0. A bias that would overflow `int32` refuses the export, naming the input whose range must widen |
+| integer input | `IntegerInputs` makes a graph input `uint8` with no `QuantizeLinear`: bytes go in, and a scale of 1/255 makes a byte the pixel it was |
+| other operators | `MatMul`, `Gemm` and everything outside the list above stay in float, and so does a node whose tensors have no range; the report says which and why |
+
+`uint16` activations are written in the `com.microsoft` domain (added to the
+model's opset imports), which ONNX Runtime and the QNN provider take at any
+opset; the weights stay `uint8`. The ranges are an input: a `Range` (minimum and
+maximum) per tensor, measured by whatever ran the float model over the
+calibration samples; `quantize.QNN` measures nothing. A tensor is quantized once
+(one pair), whatever reads it, where ONNX Runtime's own quantizer sometimes
+writes several pairs of the same parameters.
+
+```bash
+go run github.com/hyz-is/arandu-onnx/cmd/arandu-onnx-quantize@latest \
+  -manifest models/example/manifest.json -qnn models/example/qnn.json \
+  -out models/example/model.qnn.onnx
+```
+
+`qnn.json` is `quantize.QNNOptions`: `ranges` (`{"tensor": {"min": -1, "max": 1}}`),
+`fixed`, `integer_inputs`, `activations`, `weight_scales` and the
+`exclude_*` lists; unknown keys are refused. The printed manifest has precision
+`int8` and no `quantization` key (that key declares the symmetric form).
+Against ONNX Runtime's Python QNN flow, on the same ranges, the Go export gives
+the same zero point for every activation, scales within one part in 10^7 (the
+last bit of a float32), identical weights and biases within one unit; the two
+differ on how they handle a bias that overflows (ONNX Runtime widens an input's
+range and quantizes again; here the export is refused and the caller widens it).
 
 ### QDQ INT8 from a calibration table
 
@@ -721,6 +785,10 @@ verified tables into the TensorRT cache directory) and nothing else, and
   guessed. Its Softmax rank and Clip and Pad element types come from a small
   inference over the graph, and where that cannot tell, the upgrade takes the
   form that does not depend on it, or refuses.
+- `quantize.QNN` is verified on the CPU provider (the tests build small synthetic
+  graphs); that a Qualcomm NPU runs the export, how fast and how accurately, is
+  measured on that device, not here. It quantizes convolutions and the operators
+  listed above and leaves matrix products in float.
 - The QDQ export and the rewrites are verified on the ONNX Runtime CPU
   provider only. The TensorRT rules `CheckTensorRT` applies are those of the
   TensorRT 10 documentation; that TensorRT builds an INT8 engine from an export,

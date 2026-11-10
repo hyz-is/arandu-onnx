@@ -80,8 +80,10 @@ calibration/    the table, its two file formats, and the range collector (pure G
 internal/onnxgraph/  the protobuf reading and output rewriting calibration needs
 graph/          load, edit and write ONNX models, keeping what is not read (pure Go)
 rewrite/        Col2Im as Reshape + grouped ConvTranspose, the opset 7-to-13 upgrade,
-                weights out of the graph inputs, Dropout to Identity
-quantize/       QDQ (table to symmetric INT8 QDQ) and CheckTensorRT
+                weights out of the graph inputs, Dropout to Identity, AveragePool to
+                depthwise Conv
+quantize/       QDQ (table to symmetric INT8 QDQ), CheckTensorRT, and QNN (ranges to
+                the asymmetric unsigned QDQ a Qualcomm NPU runs)
 cmd/arandu-onnx-calibrate/  the calibration command (not linked into an application)
 cmd/arandu-onnx-rewrite/    the rewrites, verified on the CPU (not linked)
 cmd/arandu-onnx-quantize/   the QDQ export, checked and compared on the CPU (not linked)
