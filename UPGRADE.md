@@ -10,6 +10,23 @@ Nothing to change. `qnn` and `BoundSession` are opt-in: a `Config` that does
 not name `qnn` is read and built exactly as before. The message of the error
 for an unknown provider name now lists `qnn` among the accepted ones.
 
+## v0.5.1
+
+Nothing to change. The QNN plugin is now registered as `QNNExecutionProvider`
+by default; a `QNNOptions.RegistrationName` set to that name can be removed.
+Any other name made the plugin list no NPU device.
+
+## v0.5.0
+
+Nothing to change: every addition is opt-in. To run a model on a Qualcomm
+Hexagon NPU, add `ProviderQNN` to `Config.Providers` and fill `Config.QNN`
+(`LibraryPath` of `libonnxruntime_providers_qnn.so`, `BackendType: "htp"`,
+`HTPArch`, and `ContextCache` with `CacheDir` to keep the compiled context);
+the model must be a QDQ export with fixed shapes (`arandu-onnx-quantize -qnn`).
+Set `ADSP_LIBRARY_PATH` to the directory of the HTP skel library in the
+process environment. `Runtime.OpenBound` gives a session whose tensors are
+allocated once. The CPU, CUDA, TensorRT and CoreML paths are unchanged.
+
 ## v0.4.0
 
 Code and configuration need no change; QDQ exports made with v0.3.0 do:
