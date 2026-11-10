@@ -17,7 +17,7 @@ business, and what is done about them is the application's.
 What it holds:
 
 - **Runtime** — loads the ONNX Runtime shared library, probes the preferred
-  execution providers (`cpu`, `coreml`, `cuda`, `tensorrt`) and falls back,
+  execution providers (`cpu`, `coreml`, `cuda`, `tensorrt`, `qnn`) and falls back,
   provider by provider, to the CPU when one is missing or refuses the graph.
 - **TensorRT and INT8** — TensorRT in front of CUDA on NVIDIA cards, with real
   INT8 on Turing tensor cores (the Tesla T4): a float model plus a pinned
@@ -158,10 +158,11 @@ The engines open their models on its runtime:
 | --- | --- | --- |
 | `SharedLibraryPath` | per OS, above | The ONNX Runtime library to load. One per process: a second `Runtime` with a different path is refused |
 | `IntraOpThreads` | `0` | Threads inside one operator; 0 lets ONNX Runtime choose (the physical cores). Refused above 1024 |
-| `Providers` | `["cpu"]` | Preference order among `cpu`, `coreml`, `cuda`, `tensorrt`. A provider the library or the machine lacks is skipped and reported by `Runtime.Providers()`, never refused; the CPU is always the last resort. A session the library refuses with every available accelerator is tried again without the first, down to the CPU |
+| `Providers` | `["cpu"]` | Preference order among `cpu`, `coreml`, `cuda`, `tensorrt`, `qnn`. A provider the library or the machine lacks is skipped and reported by `Runtime.Providers()`, never refused; the CPU is always the last resort. A session the library refuses with every available accelerator is tried again without the first, down to the CPU |
 | `Device` | `0` | The GPU `cuda` and `tensorrt` sessions opened with `Open` run on. `OpenOn(manifest, dir, device)` picks another per session |
 | `CUDA` | ONNX Runtime's defaults | `GPUMemLimit`, `ConvAlgoSearch`, `ConvUseMaxWorkspace`, `ArenaExtendStrategy`, `PreferNHWC`, and `Extra` for any other CUDA option |
 | `TensorRT` | off | `CacheDir`, `EngineCache`, `TimingCache`, `FP16`, `INT8`, `MaxWorkspaceSize`, `BuilderOptimizationLevel`, and `Extra` for any other `trt_*` option except those that load a library, write elsewhere or take a raw pointer |
+| `QNN` | off | Read only when `qnn` is named: `LibraryPath` (required) and one of `BackendPath` or `BackendType` (`backend_type`, such as `htp`), `RegistrationName`, `HTPPerformanceMode`, `HTPGraphFinalizationOptimizationMode`, `VTCMMB`, `HTPArch`, `SocModel`, `OffloadGraphIOQuantization`, `EnableHTPSharedMemoryAllocator`, `ContextCache` with `CacheDir` and `EmbedContext`, `DisableCPUFallback`, `DeviceIndex`, and `Extra` for any other provider option except those that load a library or write elsewhere |
 | `Placement` | off | `Capture` the node placement of the first session of each model on each device; `RequireAccelerated` to refuse a session whose work is on the CPU; `CPUOps` the operators allowed there (default `DefaultCPUOps()`) |
 
 `New` validates the configuration and returns an error rather than starting
@@ -329,6 +330,97 @@ is not on an accelerator: every accelerator failed and the CPU is left; the
 provider asked for first got no node; a node other than the shape arithmetic in
 `DefaultCPUOps()` is on the CPU; or the placement could not be captured, since
 an unmeasured placement is not a clean one.
+
+## Qualcomm NPUs: QNN
+
+`qnn` runs a model on the Hexagon NPU (HTP) of a Qualcomm SoC through ONNX
+Runtime's QNN execution provider, which ships as a plugin library
+(`libonnxruntime_providers_qnn.so`) and not inside the ONNX Runtime library.
+Nothing is discovered: the application names the plugin, the QNN backend
+library and the cache directory, and `qnn` does nothing unless `Providers`
+names it.
+
+```go
+off := false
+cfg := onnx.Config{
+	Providers: []string{onnx.ProviderQNN, onnx.ProviderCPU},
+	QNN: onnx.QNNOptions{
+		LibraryPath:                          "/usr/lib/libonnxruntime_providers_qnn.so",
+		BackendPath:                          "libQnnHtp.so",
+		HTPPerformanceMode:                   "burst",
+		HTPGraphFinalizationOptimizationMode: 3,
+		HTPArch:                              68,
+		OffloadGraphIOQuantization:           &off,
+		ContextCache:                         true,
+		CacheDir:                             "/var/lib/app/qnn",
+		DisableCPUFallback:                   true,
+	},
+	Placement: onnx.PlacementOptions{RequireAccelerated: true},
+}
+```
+
+The library is registered with the environment once per process
+(`RegisterExecutionProviderLibrary`) and the session is built with
+`AppendExecutionProviderV2` on the first device the plugin lists under
+`QNNExecutionProvider`; `DeviceIndex` picks another. A plugin that lists none, a
+library that is missing or a driver that is absent make `qnn` unavailable, with
+the reason in `Runtime.Providers()`.
+
+Unavailable is a preference skipped, as for every provider. To make that a
+refusal, set `Placement.RequireAccelerated`: a session whose graph is not on
+the NPU fails with `ErrCPUFallback`, and `DisableCPUFallback` makes ONNX
+Runtime itself fail a graph the provider cannot take whole. Whether the CPU is
+acceptable is the application's decision: leave both off to accept it.
+
+`ContextCache` keeps the compiled context binary in `CacheDir`, under the
+manifest's id and the digest of the model, and loads it on the next start
+instead of compiling the graph again. The first start writes it, the next
+ones read it. It is specific to the hardware generation and the library
+versions it was compiled with: clear the directory when either changes. The
+verified model is still the file the manifest names; the cache is generated
+output in a directory private to the application, created with mode 0700.
+
+`VTCMMB` is set only when positive: some plugin builds reject `vtcm_mb` at
+graph creation, so a deployment leaves it zero until its own plugin accepts it.
+The plugin also needs the DSP skeleton libraries of the platform on the
+device's library path (for Hexagon, `ADSP_LIBRARY_PATH`), which is the
+environment of the process and not a setting here.
+
+The cache file is named after the manifest's id and model digest, the ONNX
+Runtime version that compiled it and the size and modification time of the
+plugin library, so another model, runtime or plugin build compiles again
+instead of loading a stale context. Generate it with the runtime that will
+load it.
+
+The graph has to be one the provider compiles: fixed shapes, and operators and
+types the HTP supports, usually a statically quantized QDQ export.
+
+### Bound sessions
+
+`Session.Run` builds its input values and copies its outputs on every call. A
+pipeline that runs one model over a stream of frames uses a `BoundSession`
+instead: the input and output tensors are allocated once, by the manifest's
+shapes, and `Run` reuses them.
+
+```go
+bound, err := rt.OpenBound(manifest, modelDir) // verified like Open
+copy(bound.InputFloat32("images"), frame)      // the tensor's own memory
+err = bound.Run()
+heads := bound.OutputFloat32("score_8")        // read in place, overwritten by the next Run
+```
+
+A quantized model with `uint8` inputs and outputs is fed and read as such:
+`InputUint8` is written with raw values, and the outputs are `uint8` that the
+caller dequantizes with the scale and zero point the model states, read by
+`OutputQuantization(name)` from the `QuantizeLinear` node that produces the
+output (`InputQuantization` from the `DequantizeLinear` that consumes an input).
+Both return `ErrNoQuantization` for a tensor whose quantization is not one
+scale and one zero point.
+
+A `BoundSession` has one owner: its tensors are shared by every call.
+`InputUint8`, `InputInt64`, `OutputUint8` and `OutputInt64` are the other
+element types. A dynamic first dimension is bound as 1; any other dynamic
+dimension is refused. `Placement` and `Model` are those of a `Session`.
 
 ## Graph tools: rewrites and the QDQ export
 

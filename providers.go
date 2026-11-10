@@ -29,6 +29,22 @@ type SessionPlan struct {
 	// TensorRT is the ProviderTensorRT options, by ONNX Runtime's names. Empty
 	// when ProviderTensorRT is not configured.
 	TensorRT map[string]string
+	// QNN is the ProviderQNN options, by ONNX Runtime's names. Empty when
+	// ProviderQNN is not configured.
+	QNN map[string]string
+	// QNNConfig is the session configuration entries ProviderQNN sets
+	// (ep.context_enable, ep.context_file_path, ep.context_embed_mode,
+	// session.disable_cpu_ep_fallback). Empty when ProviderQNN is not
+	// configured.
+	QNNConfig map[string]string
+	// QNNLibrary is the plugin library, QNNRegistration the name it is
+	// registered under and QNNDeviceIndex the device used among those it lists.
+	QNNLibrary      string
+	QNNRegistration string
+	QNNDeviceIndex  int
+	// QNNContextFile is the compiled context kept for this model, inside
+	// QNNOptions.CacheDir. Empty when the context is not cached.
+	QNNContextFile string
 	// INT8 is whether TensorRT is asked to run the model in INT8.
 	INT8 bool
 	// Calibration is the SHA-256 of the table TensorRT is handed. Empty when
@@ -82,6 +98,8 @@ func (c Config) plan(m Manifest, device int) SessionPlan {
 			p.CUDA = c.CUDA.options(device)
 		case ProviderTensorRT:
 			c.TensorRT.fill(&p, m)
+		case ProviderQNN:
+			c.QNN.fill(&p, m)
 		}
 	}
 	return p
@@ -192,7 +210,9 @@ func probeProviders(preferred []string) []ProviderStatus {
 // probeProvider appends one provider, with ONNX Runtime's default options, to
 // options nobody uses.
 func probeProvider(name string) error {
-	if name == ProviderCPU {
+	// ProviderQNN needs its plugin library, which only the configuration
+	// names: Runtime.Init probes it.
+	if name == ProviderCPU || name == ProviderQNN {
 		return nil
 	}
 	options, err := ort.NewSessionOptions()
@@ -233,6 +253,11 @@ func appendProvider(options *ort.SessionOptions, name string, plan *SessionPlan)
 			}
 		}
 		return options.AppendExecutionProviderTensorRT(trt)
+	case ProviderQNN:
+		if plan == nil {
+			return fmt.Errorf("the plugin library is named by the configuration")
+		}
+		return appendQNN(options, plan)
 	default:
 		return nil
 	}

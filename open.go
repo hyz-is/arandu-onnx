@@ -85,6 +85,9 @@ func (r *Runtime) OpenOn(m Manifest, dir string, device int) (*Session, error) {
 	}
 
 	plan := r.cfg.plan(m, device)
+	if containsProvider(plan.Accelerators, ProviderQNN) {
+		versionQNNContext(&plan, r.version)
+	}
 	built, err := r.createSession(m, data, table, plan)
 	if err != nil {
 		return nil, err
@@ -261,6 +264,12 @@ func (r *Runtime) build(m Manifest, data, table []byte, plan SessionPlan, accele
 		}
 	}
 
+	if containsProvider(accelerators, ProviderQNN) {
+		if err := prepareQNN(plan); err != nil {
+			return builtSession{}, err
+		}
+	}
+
 	key := placementKey(m, plan, accelerators)
 	r.placementsMu.Lock()
 	placement, known := r.placements[key]
@@ -377,6 +386,11 @@ func (r *Runtime) newSession(m Manifest, data []byte, accelerators []string, pla
 		if err := appendProvider(options, name, &plan); err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
+	}
+	// A context compiled by an earlier start is loaded from its path, because
+	// a context that keeps its binary beside it finds the binary there.
+	if containsProvider(accelerators, ProviderQNN) && cachedQNNContext(plan) {
+		return ort.NewDynamicAdvancedSession(plan.QNNContextFile, names(m.Inputs), names(m.Outputs), options)
 	}
 	return ort.NewDynamicAdvancedSessionWithONNXData(data, names(m.Inputs), names(m.Outputs), options)
 }

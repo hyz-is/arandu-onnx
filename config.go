@@ -25,6 +25,10 @@ const (
 	// cores of a Turing card such as the Tesla T4. It is named before
 	// ProviderCUDA, which then takes the nodes TensorRT leaves.
 	ProviderTensorRT = "tensorrt"
+	// ProviderQNN is the Qualcomm AI Engine Direct execution provider, loaded
+	// as a plugin library (Config.QNN.LibraryPath) and run on a Qualcomm
+	// Hexagon NPU (HTP). It is never probed or used unless it is named.
+	ProviderQNN = "qnn"
 )
 
 // MaxIntraOpThreads is the ceiling Config.IntraOpThreads is refused above. A
@@ -71,7 +75,7 @@ type Config struct {
 	IntraOpThreads int
 
 	// Providers is the execution providers to try, in order of preference:
-	// ProviderCPU, ProviderCoreML, ProviderCUDA, ProviderTensorRT. Empty means
+	// ProviderCPU, ProviderCoreML, ProviderCUDA, ProviderTensorRT, ProviderQNN. Empty means
 	// ProviderCPU alone. On an NVIDIA machine the order that uses everything
 	// is tensorrt, cuda, cpu.
 	//
@@ -99,6 +103,10 @@ type Config struct {
 	// landed on, and for the refusal of a session whose work fell back to the
 	// CPU.
 	Placement PlacementOptions
+
+	// QNN tunes ProviderQNN. It is read only when ProviderQNN is named in
+	// Providers.
+	QNN QNNOptions
 }
 
 // CUDAOptions is the ProviderCUDA options this package sets. A zero field
@@ -307,9 +315,14 @@ func (c Config) Validate() error {
 		case ProviderCPU:
 		case ProviderCoreML, ProviderCUDA, ProviderTensorRT:
 			accelerated = true
+		case ProviderQNN:
+			accelerated = true
+			if err := c.QNN.validate(); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("onnx: Config.Providers names %q, which is not one of %q, %q, %q or %q",
-				provider, ProviderCPU, ProviderCoreML, ProviderCUDA, ProviderTensorRT)
+			return fmt.Errorf("onnx: Config.Providers names %q, which is not one of %q, %q, %q, %q or %q",
+				provider, ProviderCPU, ProviderCoreML, ProviderCUDA, ProviderTensorRT, ProviderQNN)
 		}
 		if seen[provider] {
 			return fmt.Errorf("onnx: Config.Providers names %q twice", provider)
@@ -432,6 +445,7 @@ func (c Config) clone() Config {
 	}
 	c.CUDA.Extra = maps.Clone(c.CUDA.Extra)
 	c.TensorRT.Extra = maps.Clone(c.TensorRT.Extra)
+	c.QNN = c.QNN.clone()
 	if c.Placement.CPUOps != nil {
 		c.Placement.CPUOps = append([]string{}, c.Placement.CPUOps...)
 	}

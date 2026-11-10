@@ -147,6 +147,28 @@ func (t *Tensor) Int8s() ([]int8, error) {
 	return out, nil
 }
 
+// Uint8s returns the values of a uint8 tensor.
+func (t *Tensor) Uint8s() ([]uint8, error) {
+	if err := t.readable(Uint8); err != nil {
+		return nil, err
+	}
+	n := t.Elements()
+	if t.RawData != nil || len(t.Int32Data) == 0 {
+		if int64(len(t.RawData)) != n {
+			return nil, fmt.Errorf("%w: %s has %d raw bytes for %d uint8 values", ErrUnreadable, t.Name, len(t.RawData), n)
+		}
+		return append([]uint8(nil), t.RawData...), nil
+	}
+	if int64(len(t.Int32Data)) != n {
+		return nil, fmt.Errorf("%w: %s has %d uint8 values and shape %v", ErrUnreadable, t.Name, len(t.Int32Data), t.Dims)
+	}
+	out := make([]uint8, n)
+	for i, v := range t.Int32Data {
+		out[i] = uint8(v)
+	}
+	return out, nil
+}
+
 // Float32Tensor returns a float32 tensor, its values stored as raw data.
 func Float32Tensor(name string, dims []int64, values []float32) *Tensor {
 	raw := make([]byte, 0, 4*len(values))
