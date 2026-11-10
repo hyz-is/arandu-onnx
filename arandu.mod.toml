@@ -17,8 +17,10 @@ network = false
 # exists. With TensorRT configured it also creates, under the cache directory
 # the application names, one private directory per model and writes into it
 # the verified copy of the model's calibration table, which is where TensorRT
-# reads it; TensorRT writes its engines and timing cache there. It writes
-# nothing anywhere else. The calibration command in cmd/ writes the table it
+# reads it; TensorRT writes its engines and timing cache there. With QNN configured and its context cache on, it also
+# writes the compiled context of each model under the QNN cache directory the
+# application names, and registers the plugin library the application names.
+# It writes nothing anywhere else. The calibration command in cmd/ writes the table it
 # is told to, and is not linked into an application; nor are the rewrite and
 # quantize commands, which read a model through its manifest and write the new
 # model and its report where they are told to. The graph, rewrite and quantize

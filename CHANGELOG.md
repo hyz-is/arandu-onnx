@@ -10,6 +10,34 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+### Added
+
+- `ProviderQNN` (`"qnn"`) and `Config.QNN` (`QNNOptions`): the Qualcomm AI
+  Engine Direct execution provider, loaded as a plugin library and run on a
+  Hexagon NPU. The library is registered once per process and the session is
+  built with `AppendExecutionProviderV2`. Provider options (`backend_path`,
+  `htp_performance_mode`, `htp_graph_finalization_optimization_mode`,
+  `vtcm_mb`, `htp_arch`, `soc_model`, `offload_graph_io_quantization`,
+  `enable_htp_shared_memory_allocator`, and `Extra`) and session
+  configuration entries (`ep.context_enable`, `ep.context_file_path`,
+  `ep.context_embed_mode`, `session.disable_cpu_ep_fallback`) are set from
+  typed fields. `ContextCache` keeps the compiled context in `CacheDir` and
+  loads it on the next start. `SessionPlan` gains the `QNN*` fields.
+- `LogProviderQNN`: the placement report and `RequireAccelerated` understand
+  the provider.
+- `Runtime.OpenBound`, `OpenBoundOn` and `BoundSession`: a verified model whose
+  input and output tensors are allocated once and reused by every `Run`, for
+  `float32`, `uint8` and `int64`. `InputQuantization` and `OutputQuantization`
+  return the scale and zero point the graph states for a quantized input or
+  output (`QuantParams`, `ErrNoQuantization`).
+- `QNNOptions.BackendType` (`backend_type`) beside `BackendPath`. The compiled
+  context file is named after the model digest, the runtime version and the
+  plugin library, so it is not reused when any of them changes.
+- `graph.Tensor.Uint8s`.
+
+Nothing existing changes: `qnn` is read only when `Providers` names it, and
+the CPU, CUDA, TensorRT and CoreML paths are as they were.
+
 ## [0.4.0] - 2026-10-20
 
 Old exports into QDQ INT8, and QDQ exports that stay whole on TensorRT

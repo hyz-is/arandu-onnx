@@ -33,6 +33,7 @@ var logProviderNames = map[string]string{
 	ProviderCUDA:     LogProviderCUDA,
 	ProviderTensorRT: LogProviderTensorRT,
 	ProviderCoreML:   LogProviderCoreML,
+	ProviderQNN:      LogProviderQNN,
 }
 
 // ErrCPUFallback is a session refused because PlacementOptions.RequireAccelerated

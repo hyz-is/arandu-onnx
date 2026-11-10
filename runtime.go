@@ -40,6 +40,9 @@ var environment struct {
 	owners  int
 	library string
 	version string
+	// plugins is the plugin execution provider libraries registered with the
+	// environment, by registration name. It dies with the environment.
+	plugins map[string]string
 }
 
 // acquireEnvironment loads the library and creates the environment, or joins
@@ -90,6 +93,7 @@ func releaseEnvironment() error {
 	}
 	environment.library = ""
 	environment.version = ""
+	environment.plugins = nil
 	return ort.DestroyEnvironment()
 }
 
@@ -173,6 +177,15 @@ func (r *Runtime) Init() error {
 	}
 	r.version = version
 	r.providers = probeProviders(r.cfg.Providers)
+	for i := range r.providers {
+		if r.providers[i].Name != ProviderQNN {
+			continue
+		}
+		if err := probeQNN(r.cfg.QNN); err != nil {
+			r.providers[i].Available = false
+			r.providers[i].Reason = err.Error()
+		}
+	}
 	r.state = stateReady
 	return nil
 }

@@ -4,6 +4,12 @@ Every release that changes what an installer has to write is described here,
 newest first. A release with nothing to change still has a heading, so this file
 and [CHANGELOG.md](CHANGELOG.md) describe the same set of versions.
 
+## Unreleased
+
+Nothing to change. `qnn` and `BoundSession` are opt-in: a `Config` that does
+not name `qnn` is read and built exactly as before. The message of the error
+for an unknown provider name now lists `qnn` among the accepted ones.
+
 ## v0.4.0
 
 Code and configuration need no change; QDQ exports made with v0.3.0 do:
