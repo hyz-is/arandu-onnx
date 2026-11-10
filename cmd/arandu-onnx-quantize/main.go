@@ -17,6 +17,14 @@
 // the printed manifest (precision int8, quantization qdq, digest included)
 // are written only when every check passed.
 //
+// With -qnn the export is quantize.QNN instead: the form the Qualcomm QNN
+// execution provider runs on a Hexagon NPU (asymmetric unsigned activations,
+// uint8 per-channel weights, int32 biases), from a JSON file of the minimum
+// and maximum of every tensor and the options (see quantize.QNNOptions)
+// instead of a calibration table. The printed manifest has precision int8 and
+// no quantization key: that key declares the symmetric form above, which this
+// one is not.
+//
 // Synthetic inputs exceed the calibrated ranges in ways real inputs do not,
 // so their difference is an upper bound on the rounding, not the model's
 // accuracy in INT8. That is measured on real samples, against FP16 on the
@@ -49,6 +57,7 @@ type options struct {
 	manifest, models, library string
 	table, format             string
 	mode                      string
+	qnn                       string
 	excludeNode, excludePref  string
 	excludeOp                 string
 	out, report, id           string
@@ -66,6 +75,7 @@ func run(args []string) error {
 	fs.StringVar(&o.table, "table", "", "the calibration table; default: the manifest's calibration entry")
 	fs.StringVar(&o.format, "format", "", "the -table format, onnxruntime or tensorrt; default: detected")
 	fs.StringVar(&o.mode, "mode", string(quantize.ModeConv), "conv (Conv, ConvTranspose) or conv-matmul (also MatMul and Gemm with a constant weight)")
+	fs.StringVar(&o.qnn, "qnn", "", "export in the form the Qualcomm QNN provider runs (asymmetric uint8 or uint16, no calibration table) from this JSON file of quantize.QNNOptions: ranges, fixed, integer_inputs, activations, weight_scales; the other flags still apply")
 	fs.StringVar(&o.excludeNode, "exclude-node", "", "comma-separated node names left in float")
 	fs.StringVar(&o.excludePref, "exclude-prefix", "", "comma-separated node name prefixes left in float")
 	fs.StringVar(&o.excludeOp, "exclude-op", "", "comma-separated operators left in float")
@@ -87,6 +97,9 @@ func run(args []string) error {
 	}
 	if o.report == "" {
 		o.report = strings.TrimSuffix(o.out, filepath.Ext(o.out)) + ".report.json"
+	}
+	if o.qnn != "" {
+		return runQNN(o)
 	}
 
 	source, models, data, err := readModel(o.manifest, o.models)
