@@ -10,6 +10,8 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
 ### Added
 
 - `ProviderQNN` (`"qnn"`) and `Config.QNN` (`QNNOptions`): the Qualcomm AI
