@@ -293,13 +293,22 @@ func (r *Runtime) build(m Manifest, data, table []byte, plan SessionPlan, accele
 		}
 		// A session keeps the log severity it was built with for its whole
 		// life, and some providers write at verbose severity on every run
-		// (the QNN provider, several lines per inference). The capture session
-		// is replaced by one built at the default severity; a provider with a
-		// compiled cache (QNN context, TensorRT engine) loads it the second time.
+		// (the QNN provider, several lines per inference). ONNX Runtime has no
+		// call that lowers the severity of a session already built, so the
+		// capture session is replaced by one built at the default severity; a
+		// provider with a compiled cache (QNN context, TensorRT engine) loads
+		// it the second time.
+		//
+		// The replacement is built before the capture session is destroyed, so
+		// the accelerator is never left without a session between the two. An
+		// accelerator whose last session is closed releases its device (the
+		// Qualcomm DSP closes its FastRPC domain), and opening it again right
+		// after can time out and leave it unusable until it is restarted.
 		if err == nil {
-			_ = session.Destroy()
+			capture := session
 			session = nil
 			err = build(false)()
+			_ = capture.Destroy()
 		}
 	} else {
 		err = build(false)()

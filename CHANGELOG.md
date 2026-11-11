@@ -10,6 +10,26 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-11
+
+### Fixed
+
+- The session that runs a model is no longer built after the capture session
+  is destroyed. In v0.5.2 the capture session of a model was destroyed and
+  the model built again, so for a moment the accelerator had no session at
+  all. On a Qualcomm NPU the last session closing releases the DSP's FastRPC
+  domain, and opening it again right after could time out for minutes
+  (`remote_init failed for domain 3, errno Connection timed out`) and leave
+  the DSP unusable until it was restarted. The replacement session is now
+  built first and the capture session is destroyed after it, so the
+  accelerator always has a session. ONNX Runtime (read in 1.27.1) has no call
+  that lowers the log severity of a session already built:
+  `UpdateEnvWithCustomLogLevel` only changes the severity of loggers created
+  afterwards, and the binding does not expose a run-level severity, so the
+  second build stays. The first
+  open of a model with `Placement.Capture` on still builds the session twice,
+  and briefly holds two.
+
 ## [0.5.2] - 2026-11-11
 
 ### Fixed

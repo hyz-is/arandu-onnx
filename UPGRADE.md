@@ -8,6 +8,14 @@ and [CHANGELOG.md](CHANGELOG.md) describe the same set of versions.
 
 Nothing to change.
 
+## v0.5.3
+
+Nothing to change. With `Placement.Capture` on, the first open of a model
+still builds the session twice, but the second is now built before the first
+is destroyed, so two sessions of the model exist for the length of one build
+(memory of both, on an accelerator). A deployment on v0.5.2 that saw the
+Qualcomm DSP time out after the first open should move to this release.
+
 ## v0.5.2
 
 Nothing to change. With `Placement.Capture` on, the first session of each model
