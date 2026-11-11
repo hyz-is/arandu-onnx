@@ -6,9 +6,14 @@ and [CHANGELOG.md](CHANGELOG.md) describe the same set of versions.
 
 ## Unreleased
 
-Nothing to change. `qnn` and `BoundSession` are opt-in: a `Config` that does
-not name `qnn` is read and built exactly as before. The message of the error
-for an unknown provider name now lists `qnn` among the accepted ones.
+Nothing to change.
+
+## v0.5.2
+
+Nothing to change. With `Placement.Capture` on, the first session of each model
+is built twice (once at verbose severity to read the placement, then at the
+default severity to run), so the first open of a model without a compiled
+cache takes about twice as long; later opens are as before.
 
 ## v0.5.1
 

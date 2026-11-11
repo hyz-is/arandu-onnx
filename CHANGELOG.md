@@ -10,6 +10,18 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-11
+
+### Fixed
+
+- The session built to capture the placement is no longer the one that runs.
+  A session keeps the log severity it was built with, so the first session of
+  each model ran at verbose severity for its whole life, and the QNN provider
+  wrote a dozen lines on every inference (over a hundred per second on a
+  camera node). The capture session is now destroyed and the model built again
+  at the default severity; a QNN context or TensorRT engine cache is loaded the
+  second time. Sessions opened without `Placement.Capture` are unchanged.
+
 ## [0.5.1] - 2026-11-10
 
 ### Fixed

@@ -291,6 +291,16 @@ func (r *Runtime) build(m Manifest, data, table []byte, plan SessionPlan, accele
 			r.placements[key] = placement.clone()
 			r.placementsMu.Unlock()
 		}
+		// A session keeps the log severity it was built with for its whole
+		// life, and some providers write at verbose severity on every run
+		// (the QNN provider, several lines per inference). The capture session
+		// is replaced by one built at the default severity; a provider with a
+		// compiled cache (QNN context, TensorRT engine) loads it the second time.
+		if err == nil {
+			_ = session.Destroy()
+			session = nil
+			err = build(false)()
+		}
 	} else {
 		err = build(false)()
 	}
